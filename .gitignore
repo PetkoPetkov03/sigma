@@ -1,0 +1,31 @@
+# Data
+data/
+
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.svelte-kit/
+.turbo/
+coverage/
+
+# Cloudflare / wrangler
+.wrangler/
+.dev.vars
+wrangler.local.toml
+
+# Env
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+*.local
+*.log
+
+# TypeScript
+*.tsbuildinfo
