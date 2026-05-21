@@ -36,7 +36,7 @@ No fork, no `develop`, no `staging`. Work happens on short-lived feature branche
 ## Working directory and environment
 
 - The runtime cwd is the project root — `/workspaces/sigma-prototype` inside the devcontainer.
-- Sigma reuses the kolkostruva tech stack (pnpm + turbo monorepo on Cloudflare: SvelteKit/Pages, Workers, D1, Durable Objects, Vectorize, Workers AI, Queues, KV, R2, AI Gateway). Use the existing `pnpm`, `wrangler`, and `turbo` scripts — see [README.md](README.md).
+- Sigma reuses the kolkostruva tech stack (pnpm + turbo monorepo on Cloudflare: React Router v7 (SSR) on Workers, D1, Durable Objects, Vectorize, Workers AI, Queues, KV, R2, AI Gateway). Use the existing `pnpm`, `wrangler`, and `turbo` scripts — see [README.md](README.md).
 - The monorepo scaffold (`apps/`, `packages/`, workspace + lockfile) is still being established. If a script doesn't exist yet, say so rather than inventing one.
 - Run only the minimal tests needed to gain confidence in the change. Full release verification is reserved for explicit asks (release tickets, smoke tests).
 

@@ -28,31 +28,31 @@ pnpm dev      # daily: starts every Worker + frontend in parallel
 
 ## Layout
 
-Sigma reuses the kolkostruva tech stack — a single TypeScript monorepo on Cloudflare's edge platform (pnpm + turbo; SvelteKit on Pages; Workers + D1 + Durable Objects + Vectorize + Workers AI + Queues + KV + R2, fronted by AI Gateway). The intended top-level layout:
+Sigma reuses the kolkostruva tech stack — a single TypeScript monorepo on Cloudflare's edge platform (pnpm + turbo; React Router v7 SSR on Workers; D1 + Durable Objects + Vectorize + Workers AI + Queues + KV + R2, fronted by AI Gateway). The intended top-level layout:
 
-| Top-level dir | Contents |
-|---|---|
-| `apps/` | Cloudflare Workers / Pages — `web` (citizen / authority / bidder portals), `api` (procurement search, profiles, risk scores, open-data), `assistant` (AI Procurement Assistant), `etl` (ingestion + analysis pipeline), `admin` (auditor/controller ops UI) |
-| `packages/` | Shared libraries — `api-contract`, `db`, `analysis` (risk scoring, anomaly + cartel detection), `config`, `assistant-tools`, `shared` |
-| `scripts/` | Bootstrap, deploy, setup-local, teardown |
-| `data/` | Market-price reference workbooks (`Храни.xlsx` — foods, `Строителство.xlsx` — construction) for the price-anomaly module, plus local fixtures |
-| `docs/` | Specification and design docs |
-| `.devcontainer/` | Container-based dev environment |
-| `.github/workflows/` | CI: deploy on push, scheduled ingestion, tests on PR |
+| Top-level dir        | Contents                                                                                                                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/`              | Cloudflare Workers — `web` (React Router SSR; citizen / authority / bidder portals), `api` (procurement search, profiles, risk scores, open-data), `assistant` (AI Procurement Assistant), `etl` (ingestion + analysis pipeline), `admin` (auditor/controller ops UI) |
+| `packages/`          | Shared libraries — `api-contract`, `db`, `analysis` (risk scoring, anomaly + cartel detection), `config`, `assistant-tools`, `shared`                                                                                                                                 |
+| `scripts/`           | Bootstrap, deploy, setup-local, teardown; **АОП ingestion** (`load-aop.mjs`, `normalize-aop.sql`, `dq-aop.sql`)                                                                                                                                                       |
+| `data/`              | Source **АОП register exports** (`Храни.xlsx` — food-sector procurement, `Строителство.xlsx` — construction-sector), ~129k contract/lot rows; gitignored. Ingested into D1 by the `scripts/` pipeline — see [`docs/data-ingestion.md`](docs/data-ingestion.md)        |
+| `docs/`              | Specification and design docs                                                                                                                                                                                                                                         |
+| `.devcontainer/`     | Container-based dev environment                                                                                                                                                                                                                                       |
+| `.github/workflows/` | CI: deploy on push, scheduled ingestion, tests on PR                                                                                                                                                                                                                  |
 
 The analysis/monitoring module (risk scoring 0–100, спец-checker AI, ценови аномалии, картелна детекция) is the heart of the system — see the architecture doc in `docs/`.
 
 ## Common commands
 
-| Command | Purpose |
-|---|---|
-| `pnpm setup` | First-time setup on a fresh checkout |
-| `pnpm dev` | Start every Worker + frontend locally (miniflare) |
-| `pnpm typecheck` | Type-check the workspace |
-| `pnpm test` | Run all tests |
-| `pnpm bootstrap` | Dry-run Cloudflare resource creation (one-time per CF account) |
-| `pnpm bootstrap:apply` | Actually create the resources |
-| `pnpm deploy` | Run by CI on push to `main`; idempotent migrate + seed + deploy |
+| Command                | Purpose                                                         |
+| ---------------------- | --------------------------------------------------------------- |
+| `pnpm setup`           | First-time setup on a fresh checkout                            |
+| `pnpm dev`             | Start every Worker + frontend locally (miniflare)               |
+| `pnpm typecheck`       | Type-check the workspace                                        |
+| `pnpm test`            | Run all tests                                                   |
+| `pnpm bootstrap`       | Dry-run Cloudflare resource creation (one-time per CF account)  |
+| `pnpm bootstrap:apply` | Actually create the resources                                   |
+| `pnpm deploy`          | Run by CI on push to `main`; idempotent migrate + seed + deploy |
 
 ## Operational security
 
