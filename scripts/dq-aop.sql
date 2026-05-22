@@ -26,9 +26,17 @@ UNION ALL SELECT 'eik', 'prefix_label_recoverable', COUNT(*)
   FROM raw_aop_contracts WHERE contractor_eik LIKE 'ЕИК %'
 UNION ALL SELECT 'eik', 'placeholder_not_published', COUNT(*)
   FROM raw_aop_contracts WHERE contractor_eik = 'не се публикува'
-UNION ALL SELECT 'eik', 'possible_consortium', COUNT(*)
+UNION ALL SELECT 'eik', 'separator_in_field', COUNT(*)
   FROM raw_aop_contracts
   WHERE contractor_eik LIKE '%/%' OR contractor_eik LIKE '%;%' OR contractor_eik LIKE '%,%' OR contractor_eik LIKE '%+%';
+
+-- Consortia / обединения (the bulk are detectable only by name markers)
+SELECT 'consortium' AS check_name, 'rows_by_name_marker' AS detail, COUNT(*) AS n
+  FROM raw_aop_contracts
+  WHERE contractor_name LIKE '%ДЗЗД%' OR UPPER(contractor_name) LIKE '%ОБЕДИНЕНИЕ%' OR UPPER(contractor_name) LIKE '%КОНСОРЦИУМ%'
+UNION ALL SELECT 'consortium', 'distinct_names', COUNT(DISTINCT contractor_name)
+  FROM raw_aop_contracts
+  WHERE contractor_name LIKE '%ДЗЗД%' OR UPPER(contractor_name) LIKE '%ОБЕДИНЕНИЕ%' OR UPPER(contractor_name) LIKE '%КОНСОРЦИУМ%';
 
 -- contract_kind domain (note: kind ≠ dataset/file)
 SELECT 'contract_kind' AS check_name, COALESCE(contract_kind, '(null)') AS detail, COUNT(*) AS n
