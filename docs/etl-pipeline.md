@@ -131,11 +131,27 @@ Two sources feed the domain today, plus retired loaders kept for history.
 | **Admin ЦАИС ЕОП export** (`data/Open_data_resources.zip`) | Contracts / Tenders / Annexes — rich per row: procedure type, CPV (+ label), estimated/signing/current value, lots, authority type, EU funding, bid count, consortium flag | 2020–2026 | CSV (nested zips) | **authoritative base**; loaded once by `load-admin.mjs` |
 | **OCDS release packages** (data.egov.bg, org `502`) | full nested model: parties / tender / lots / awards / contracts / bids / amendments | 2026+ | JSON | **the ongoing/live feed**; `load-ocds.mjs` |
 
-The admin export already covers through its snapshot date (2026-05-22), so there is **no overlap to
-reconcile today**; OCDS is the mechanism to stay current after it. When OCDS later returns a record
-the admin snapshot already has, **admin wins** — dedupe on `(УНП, contract_number)` at load time
-(the admin rows are richer). A contract whose УНП has no tenders-export row gets a **synthetic
-tender** at normalize time, so every contract has a parent regardless of source.
+The admin export covers through its snapshot date (2026-05-22), so OCDS is the mechanism to stay
+current after it — and the gap is **not** a data-loss risk: the OCDS periods are a **retained,
+backfillable archive** (currently 2026-01-01 → 05-06, published fortnightly), so whenever you deploy
+you catch up the whole window. At go-live, `load-ocds --all` pulls every period (overlapping the admin
+base) and `normalize` dedupes — **admin wins**: an OCDS contract is taken only when no admin row shares
+its **`contract_number`** (the АОП contract document number, the cross-feed key — OCDS keeps its `ocid`,
+e.g. `ocds-e82gsb-…`, in `unp`, which never matches the admin УНП). **Validated**: loading the full
+overlapping OCDS feed (12,436 contracts) moved the total only **190,427 → 190,429** (the 2 genuinely-new
+ones), not +12k. `data_freshness` records the "current as of" date per feed.
+
+**Go-live catch-up runbook:**
+1. *(best)* refresh the admin export for a recent base;
+2. `node scripts/load-ocds.mjs --all --apply` (overlaps the admin base);
+3. re-run `normalize-egov.sql` (dedup, admin wins) — e.g. via `node scripts/import.mjs --remote` steps.
+
+**Caveat for OCDS-as-primary** (not needed while admin is the base — OCDS adds only a handful of new
+contracts today): because OCDS keeps its `ocid` in `unp`, OCDS-only contracts get an `ocid`-keyed
+synthetic tender, and the amendment rollup (`derive-amendments.sql`, keyed on `unp`+`contract_number`)
+won't attach OCDS amendments to admin contracts. Before OCDS becomes the authoritative feed, map the
+real АОП УНП in `load-ocds.mjs` (or re-key those joins on `contract_number`). A contract whose УНП has
+no tenders-export row gets a **synthetic tender** so it always has a parent.
 
 ## Source history
 
@@ -192,8 +208,8 @@ from the lot rows; bidders deduped on contractor ЕИК with a name-based consor
 detail stays in `raw_egov_amendments` (no separate domain table) — the rollup onto contracts is
 all the core needs; the full annex history feeds the parked signals.
 
-**Still to build:** a provenance/freshness record (fetched_at, row_count, status per source) to
-surface the **data-freshness date the IA requires** and to drive incremental OCDS loads.
+**Freshness:** the `data_freshness` table records the "current as of" date + row count per feed
+(`admin`, `ocds`), recomputed by `normalize` — this is the **data-freshness date the IA requires**.
 
 ## Runtime — backfill local, deltas (optionally) on a Worker
 
@@ -216,11 +232,13 @@ what keeps it cheap. Until the Worker is wired, the CLI on a schedule (or manual
 
 ## Dedup & identity
 
-- **Contract identity:** one domain contract per admin staging row (`c:<staging id>`); a procurement
-  is keyed by **УНП** (`tenders.source_id`), the link to OCDS `ocid`.
+- **Contract identity:** one domain contract per staging row (`c:<staging id>`); a procurement is
+  keyed by **УНП** (`tenders.source_id`). Note the admin УНП and the OCDS `ocid` are **different
+  identifiers** — only `contract_number` is common to both feeds.
 - **admin ↔ OCDS:** the admin export is the system of record through its snapshot date; OCDS
-  **continues** the timeline after it. Where they overlap, **admin wins** — dedupe on
-  `(УНП, contract_number)` at OCDS load time (admin rows are richer). No silent collisions.
+  **continues** the timeline after it. Where they overlap, **admin wins** — `normalize` takes an OCDS
+  contract only when no admin row shares its **`contract_number`** (admin rows are richer). Validated:
+  the full overlapping OCDS feed adds only the genuinely-new contracts, not duplicates.
 - **Grain:** the tenders export is one **header row** per УНП (→ one `tenders` row) plus one row per
   **lot** (→ `lots`); each contract award line is its own contract. УНП seen only in contracts gets a
   synthetic tender so every contract has a parent.
