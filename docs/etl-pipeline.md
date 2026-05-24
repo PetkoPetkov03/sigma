@@ -96,9 +96,11 @@ strategic`; tender `place_of_performance` (a **NUTS code** — tender-level regi
 duration`, tender-level `eu_programme`, `green/social/innovation/cancelled`. The empty **`bids` table was
 dropped** (no source publishes per-offer bids; only counts/statistics).
 
-**OCDS parties** (`load-ocds.mjs` → `raw_ocds_parties`). Every release party (ЕИК, name, roles, full
-address incl. NUTS) is captured; `normalize-egov.sql` enriches `authorities`/`bidders`
-`nuts/settlement/address` by ЕИК (the 2026+ entities OCDS covers).
+**OCDS parties + award suppliers** (`load-ocds.mjs` → `raw_ocds_parties`, `raw_ocds_award_suppliers`).
+Every release party (ЕИК, name, roles, full address incl. NUTS) is captured; `normalize-egov.sql`
+enriches `authorities`/`bidders` `nuts/settlement/address` by ЕИК (the 2026+ entities OCDS covers). The
+loader also captures **every award supplier** — `supplier_count > 1` marks a joint venture / consortium
+(the member breakdown OCDS exposes), feeding the parked owner layer.
 
 **Trade Register** (`load-tr.mjs` → `raw_tr_companies/_owners/_actual_owners`; domain `company_owners`
 + `beneficial_owners`). Parses the Агенция по вписванията **daily XML deltas** (data.egov.bg

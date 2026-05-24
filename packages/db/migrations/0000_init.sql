@@ -406,6 +406,21 @@ CREATE TABLE raw_ocds_parties (
   contact_phone  TEXT
 );
 
+-- OCDS award suppliers — every supplier on every award (supplier_count > 1 = joint venture /
+-- consortium, the member breakdown OCDS exposes). Captured by scripts/load-ocds.mjs. Source 'ocds:%'.
+CREATE TABLE raw_ocds_award_suppliers (
+  id             INTEGER PRIMARY KEY,
+  source         TEXT NOT NULL,
+  dataset_uri    TEXT,
+  resource_uri   TEXT,
+  fetched_at     TEXT NOT NULL,
+  ocid           TEXT,
+  award_id       TEXT,
+  supplier_count INTEGER,                   -- suppliers on this award (>1 = joint / consortium)
+  supplier_eik   TEXT,
+  supplier_name  TEXT
+);
+
 -- Trade Register (Агенция по вписванията; data.egov.bg dataset 2df0c2af-…) — daily XML deltas, by
 -- scripts/load-tr.mjs. One company row per <Deed> (current state) + owner / beneficial-owner rows.
 -- Source 'tr:<file date>'; latest file_date wins on dedup. Personal IDs are hashed at source.
@@ -518,6 +533,8 @@ CREATE INDEX idx_egov_amend_contract ON raw_egov_amendments(unp, contract_number
 CREATE INDEX idx_egov_amend_source ON raw_egov_amendments(source);
 CREATE INDEX idx_ocds_parties_eik ON raw_ocds_parties(eik);
 CREATE INDEX idx_ocds_parties_source ON raw_ocds_parties(source);
+CREATE INDEX idx_ocds_award_suppliers_eik ON raw_ocds_award_suppliers(supplier_eik);
+CREATE INDEX idx_ocds_award_suppliers_source ON raw_ocds_award_suppliers(source);
 CREATE INDEX idx_tr_companies_uic ON raw_tr_companies(uic);
 CREATE INDEX idx_tr_owners_uic ON raw_tr_owners(uic);
 CREATE INDEX idx_tr_actual_owners_uic ON raw_tr_actual_owners(uic);
