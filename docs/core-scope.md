@@ -150,11 +150,14 @@ propagates these directly — the admin export carries them per row, from `raw_e
 | Authority type | `authorities.type` | **done** — 4,867 / 4,868 typed (from Вид на възложителя) |
 | CPV labels | `tenders.cpv_description` | **done** — the export ships the label; no external dictionary needed |
 | Awarded-to-group flag | `contracts.awarded_to_group` | **done** — per-contract (distinct from the entity-level `bidders.is_consortium`) |
-| **Sector** | — | **pending** — no sector column in the admin data; closest is the authority's Основна дейност (`raw_egov_tenders.main_activity`, not yet promoted) or the CPV division |
-| **Contract subject / end date** | — | **pending** — minor; the tender title (`procurement_subject`) covers most needs |
+| **Sector** | [`@sigma/config`](../packages/config/src/index.ts) `sectorForCpv()` | **done** — all 45 CPV divisions classified deterministically from `tenders.cpv_code`; facet + filter wired into the API |
+| **Contract subject / end date** | `contracts.contract_subject` / tender `start_date`,`end_date`,`duration_days` | **done** — admin full-capture |
 
-So the core is buildable now. Only **sector** (a chip/filter) and a couple of minor contract fields
-remain — none blocking.
+So the core is buildable now — and the previously-pending **sector** + minor contract fields are now
+**done** (the admin full-capture + the CPV-division sector config). The pipeline has since grown into a
+multi-source model (admin full-capture, OCDS parties → location, Trade Register → owners [postponed],
+NUTS region, scheduled ETL); see [etl-pipeline.md → Multi-source expansion](etl-pipeline.md#multi-source-expansion-may-2026)
+and the as-built [mock-coverage.md](mock-coverage.md).
 
 **Money & data quality.** Sum the canonical **`contracts.amount_eur`** (every currency already in EUR:
 BGN at the fixed ÷1.95583 peg, foreign at the ECB signing-date rate with `fx_converted = 1`; `NULL`
