@@ -13,19 +13,18 @@ export interface FilterGroup {
   type: 'checkbox' | 'radio';
   options: FilterOption[];
   selected: string[];
-  open?: boolean;
   allLabel?: string; // radio groups: the „Всички" (clear) option label
   more?: { href: string; label: string };
 }
-
-// Groups with more options than this collapse by default (e.g. Сектор/CPV has 45) unless the visitor
-// has a selection in them — a long list would otherwise push the results far down the page.
-const LARGE_GROUP = 20;
 
 // Sticky filter rail. Filters live in the URL (shareable). A `<Form method="get">` auto-submits on
 // change when JS is on (instant filtering) and still works via the visible button without JS. The
 // current `sort` is preserved through a hidden field; `cursor`/`page` are intentionally omitted so a
 // new filter resets to page 1.
+//
+// All groups render expanded by default so the available filters are visible at a glance; the visitor
+// can collapse any of them by clicking its summary (the `<details>` element preserves that local
+// state in the browser without us tracking it).
 export function FilterRail({
   groups,
   sort,
@@ -55,11 +54,8 @@ export function FilterRail({
       <Form method="get" onChange={(e) => submit(e.currentTarget)}>
           <input type="hidden" name="sort" value={sort} />
           {groups.map((g) => {
-            // A selection always reveals its group (so a checked-but-collapsed filter can't hide);
-            // large groups otherwise default closed; everything else honours the route's `open`.
-            const open = g.selected.length > 0 || (g.options.length <= LARGE_GROUP && g.open);
             return (
-              <details className="filter-group" key={g.key} open={open}>
+              <details className="filter-group" key={g.key} open>
                 <summary>
                   {g.label}
                   {g.selected.length > 0 && (
