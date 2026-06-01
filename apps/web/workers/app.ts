@@ -1,6 +1,6 @@
-import { createRequestHandler } from "react-router";
+import { createRequestHandler } from 'react-router';
 
-declare module "react-router" {
+declare module 'react-router' {
   export interface AppLoadContext {
     cloudflare: {
       env: Env;
@@ -10,8 +10,8 @@ declare module "react-router" {
 }
 
 const requestHandler = createRequestHandler(
-  () => import("virtual:react-router/server-build"),
-  import.meta.env.MODE
+  () => import('virtual:react-router/server-build'),
+  import.meta.env.MODE,
 );
 
 // `caches.default` is a Cloudflare extension to the DOM CacheStorage type; the DOM lib (loaded by
@@ -27,7 +27,7 @@ const DEPLOY_TAG = Date.now().toString(36);
 
 function cacheKey(request: Request): Request {
   const url = new URL(request.url);
-  url.searchParams.set("_dt", DEPLOY_TAG);
+  url.searchParams.set('_dt', DEPLOY_TAG);
   return new Request(url.toString(), request);
 }
 
@@ -37,12 +37,12 @@ export default {
     // (publicCache() in apps/web/app/lib/cache.ts). Deterministic and independent of platform
     // HTML-cache heuristics on *.workers.dev; TTL is driven by s-maxage. The X-Edge-Cache:
     // HIT|MISS|BYPASS header lets `curl -I` verify which path a request took.
-    const key = request.method === "GET" ? cacheKey(request) : null;
+    const key = request.method === 'GET' ? cacheKey(request) : null;
     if (key) {
       const cached = await edgeCache.match(key);
       if (cached) {
         const headers = new Headers(cached.headers);
-        headers.set("X-Edge-Cache", "HIT");
+        headers.set('X-Edge-Cache', 'HIT');
         return new Response(cached.body, {
           status: cached.status,
           statusText: cached.statusText,
@@ -54,9 +54,9 @@ export default {
     const cacheable =
       key !== null &&
       response.ok &&
-      /s-maxage=\d/.test(response.headers.get("Cache-Control") ?? "");
+      /s-maxage=\d/.test(response.headers.get('Cache-Control') ?? '');
     if (cacheable) ctx.waitUntil(edgeCache.put(key, response.clone()));
-    response.headers.set("X-Edge-Cache", cacheable ? "MISS" : "BYPASS");
+    response.headers.set('X-Edge-Cache', cacheable ? 'MISS' : 'BYPASS');
     return response;
   },
 } satisfies ExportedHandler<Env>;
