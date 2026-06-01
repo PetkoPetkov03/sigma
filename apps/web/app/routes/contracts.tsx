@@ -1,4 +1,4 @@
-import { Link, useSearchParams } from 'react-router';
+import { Link, useNavigation, useSearchParams } from 'react-router';
 import { count, date, money } from '@sigma/shared';
 import { contractsSummary, getContractFacets, listContracts, type ContractSort } from '@sigma/db';
 import type { Route } from './+types/contracts';
@@ -68,8 +68,9 @@ export default function Contracts({ loaderData }: Route.ComponentProps) {
     nextCursor: result.nextCursor,
     prevCursor: result.prevCursor,
   });
-  const csvHref = `/contracts.csv${withParams(sp, { cursor: null, page: null })}`;
+  const csvHref = `/contracts.csv${withParams(sp, { cursor: null, page: null, q: null })}`;
   const filtered = sp.get('authority') || sp.get('bidder');
+  const busy = useNavigation().state !== 'idle';
 
   const groups: FilterGroup[] = [
     {
@@ -163,70 +164,86 @@ export default function Contracts({ loaderData }: Route.ComponentProps) {
               </p>
             )}
 
-            <div className="table-wrap tbl-cards">
-              <table>
-                <thead>
-                  <tr>
-                    <th scope="col" style={{ width: 32 }}>
-                      #
-                    </th>
-                    <th scope="col">Договор</th>
-                    <th scope="col">Възложител · Изпълнител</th>
-                    <th scope="col" className="col-secondary">
-                      Процедура · Дата
-                    </th>
-                    <th scope="col" className="num">
-                      Стойност
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.items.map((c, i) => (
-                    <tr className="contract-row" key={c.id}>
-                      <td className="rank cell-rank" data-label="#">
-                        {startRank + i + 1}
-                      </td>
-                      <td className="subj cell-title" data-label="Договор">
-                        <Link className="title" to={`/contracts/${c.id}`}>
-                          {c.subject}
-                        </Link>
-                        {c.euFunded && <span className="eu">ЕС</span>}
-                        <span className="unp">
-                          УНП {c.unp}
-                          {c.isConsortium ? ' · обединение' : ''}
-                        </span>
-                      </td>
-                      <td className="parties" data-label="Възложител · Изпълнител">
-                        <span className="from">
-                          <Link to={`/authorities/${c.authoritySlug}`}>{c.authorityName}</Link>{' '}
-                          <span className="who">възложител</span>
-                        </span>
-                        <span className="to">
-                          <Link to={`/companies/${c.bidderSlug}`}>{c.bidderDisplayName}</Link>{' '}
-                          <span className="who">изпълнител</span>
-                        </span>
-                      </td>
-                      <td className="meta col-secondary" data-label="Процедура · Дата">
-                        <span className="pr">{c.procedureLabel}</span>
-                        <br />
-                        {date(c.signedAt)}
-                      </td>
-                      <td className="money" data-label="Стойност">
-                        {c.valueEur != null ? (
-                          money(c.valueEur)
-                        ) : (
-                          <span className="suspect">данните се преглеждат</span>
-                        )}
-                      </td>
+            {result.items.length === 0 ? (
+              <p className="muted">
+                Няма резултати за избраните филтри. <Link to="/contracts">Изчисти филтрите</Link>
+              </p>
+            ) : (
+              <div className="table-wrap tbl-cards" aria-busy={busy || undefined}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col" style={{ width: 32 }}>
+                        #
+                      </th>
+                      <th scope="col">Договор</th>
+                      <th scope="col">Възложител · Изпълнител</th>
+                      <th scope="col" className="col-secondary">
+                        Процедура · Дата
+                      </th>
+                      <th scope="col" className="num">
+                        Стойност
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {result.items.map((c, i) => (
+                      <tr className="contract-row" key={c.id}>
+                        <td className="rank cell-rank" data-label="#">
+                          {startRank + i + 1}
+                        </td>
+                        <td className="subj cell-title" data-label="Договор">
+                          <Link className="title" to={`/contracts/${c.id}`}>
+                            {c.subject}
+                          </Link>
+                          {c.euFunded && <span className="eu">ЕС</span>}
+                          <span className="unp">
+                            УНП {c.unp}
+                            {c.isConsortium ? ' · обединение' : ''}
+                          </span>
+                        </td>
+                        <td className="parties" data-label="Възложител · Изпълнител">
+                          <span className="from">
+                            <Link to={`/authorities/${c.authoritySlug}`}>{c.authorityName}</Link>{' '}
+                            <span className="who">възложител</span>
+                          </span>
+                          <span className="to">
+                            <Link to={`/companies/${c.bidderSlug}`}>{c.bidderDisplayName}</Link>{' '}
+                            <span className="who">изпълнител</span>
+                          </span>
+                        </td>
+                        <td className="meta col-secondary" data-label="Процедура · Дата">
+                          <span className="pr">{c.procedureLabel}</span>
+                          <br />
+                          {date(c.signedAt)}
+                        </td>
+                        <td className="money" data-label="Стойност">
+                          {c.valueEur != null ? (
+                            money(c.valueEur)
+                          ) : (
+                            <span className="suspect">данните се преглеждат</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
 
-            <Pagination nav={nav} pageSize={PAGE_SIZE.contracts} />
+            {result.items.length > 0 && <Pagination nav={nav} pageSize={PAGE_SIZE.contracts} />}
 
-            <Callout title={'Какво е „договор“ в Сигма'}>
+            <Callout>
+              <h2
+                style={{
+                  font: '400 18px/1.25 var(--font-serif)',
+                  letterSpacing: '-0.01em',
+                  color: 'var(--ink)',
+                  marginBottom: 6,
+                }}
+              >
+                Какво е „договор“ в Сигма
+              </h2>
               <p style={{ margin: '0 0 6px' }}>
                 Един възложен договор за обществена поръчка, на ниво обособена позиция (лот).
                 Стойностите се показват в евро — изчистена, съпоставима стойност на договора.

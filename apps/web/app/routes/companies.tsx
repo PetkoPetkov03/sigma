@@ -1,4 +1,4 @@
-import { Link, useSearchParams } from 'react-router';
+import { Link, useNavigation, useSearchParams } from 'react-router';
 import { count, money } from '@sigma/shared';
 import { getCompanyFacets, listCompanies, type CompanySort } from '@sigma/db';
 import type { CompanyListItem, EntityKind } from '@sigma/api-contract';
@@ -73,7 +73,8 @@ export default function Companies({ loaderData }: Route.ComponentProps) {
     prevCursor: page.prevCursor,
   });
   const startRank = (nav.page - 1) * PAGE_SIZE.companies;
-  const csvHref = `/companies.csv${withParams(sp, { cursor: null, page: null })}`;
+  const csvHref = `/companies.csv${withParams(sp, { cursor: null, page: null, q: null })}`;
+  const busy = useNavigation().state !== 'idle';
 
   const groups: FilterGroup[] = [
     {
@@ -174,14 +175,32 @@ export default function Companies({ loaderData }: Route.ComponentProps) {
                 </>
               }
             />
-            <DataTable
-              columns={columns}
-              rows={page.items}
-              getKey={(c) => c.slug}
-              caption="Компании по спечелено"
-            />
-            <Pagination nav={nav} pageSize={PAGE_SIZE.companies} />
-            <Callout title={'Какво означава „спечелено“?'}>
+            {page.items.length === 0 ? (
+              <p className="muted">
+                Няма резултати за избраните филтри. <Link to="/companies">Изчисти филтрите</Link>
+              </p>
+            ) : (
+              <div aria-busy={busy || undefined}>
+                <DataTable
+                  columns={columns}
+                  rows={page.items}
+                  getKey={(c) => c.slug}
+                  caption="Компании по спечелено"
+                />
+              </div>
+            )}
+            {page.items.length > 0 && <Pagination nav={nav} pageSize={PAGE_SIZE.companies} />}
+            <Callout>
+              <h2
+                style={{
+                  font: '400 18px/1.25 var(--font-serif)',
+                  letterSpacing: '-0.01em',
+                  color: 'var(--ink)',
+                  marginBottom: 6,
+                }}
+              >
+                Какво означава „спечелено“?
+              </h2>
               <p style={{ margin: 0 }}>
                 Сумата от стойностите на договорите (в евро), по които компанията е изпълнител.
                 Когато договорът е възложен на обединение (ДЗЗД/консорциум), цялата сума се отчита
