@@ -15,6 +15,18 @@ function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// W3C <lastmod> from a stored ISO date (tolerates a datetime suffix); '' when none usable.
+function lastmod(iso: string | null | undefined): string {
+  const m = iso && /^(\d{4}-\d{2}-\d{2})/.exec(iso);
+  return m ? `<lastmod>${m[1]}</lastmod>` : '';
+}
+
+// Dataset freshness date (latest real contract date), used as the per-URL <lastmod> fallback.
+async function datasetAsOf(db: D1Database): Promise<string | null> {
+  const row = await db.prepare(`SELECT as_of FROM home_totals WHERE id = 1`).first<{ as_of: string | null }>();
+  return row?.as_of ?? null;
+}
+
 function streamUrls(
   origin: string,
   fetchChunk: (after: string) => Promise<{ slugs: string[]; next: string | null }>,
@@ -50,16 +62,18 @@ function streamUrls(
 
 /** Streamed sitemap of all authority profile URLs. */
 export function streamAuthoritySitemap(db: D1Database, origin: string): Response {
+  const asOf = datasetAsOf(db);
   return streamUrls(origin, async (after) => {
     const { results } = await db
       .prepare(
-        `SELECT authority_id FROM authority_totals WHERE authority_id > ? ORDER BY authority_id LIMIT ?`,
+        `SELECT authority_id, last_date FROM authority_totals WHERE authority_id > ? ORDER BY authority_id LIMIT ?`,
       )
       .bind(after, CHUNK)
-      .all<{ authority_id: string }>();
+      .all<{ authority_id: string; last_date: string | null }>();
+    const fallback = await asOf;
     const slugs = results.map(
       (r) =>
-        `<url><loc>${xmlEscape(origin)}/authorities/${xmlEscape(r.authority_id.replace(/^auth:/, ''))}</loc></url>\n`,
+        `<url><loc>${xmlEscape(origin)}/authorities/${xmlEscape(r.authority_id.replace(/^auth:/, ''))}</loc>${lastmod(r.last_date ?? fallback)}</url>\n`,
     );
     const last = results[results.length - 1];
     return { slugs, next: results.length < CHUNK || !last ? null : last.authority_id };
@@ -68,16 +82,18 @@ export function streamAuthoritySitemap(db: D1Database, origin: string): Response
 
 /** Streamed sitemap of all company profile URLs. */
 export function streamCompanySitemap(db: D1Database, origin: string): Response {
+  const asOf = datasetAsOf(db);
   return streamUrls(origin, async (after) => {
     const { results } = await db
       .prepare(
-        `SELECT bidder_id FROM company_totals WHERE bidder_id > ? ORDER BY bidder_id LIMIT ?`,
+        `SELECT bidder_id, last_date FROM company_totals WHERE bidder_id > ? ORDER BY bidder_id LIMIT ?`,
       )
       .bind(after, CHUNK)
-      .all<{ bidder_id: string }>();
+      .all<{ bidder_id: string; last_date: string | null }>();
+    const fallback = await asOf;
     const slugs = results.map(
       (r) =>
-        `<url><loc>${xmlEscape(origin)}/companies/${xmlEscape(companySlug(r.bidder_id))}</loc></url>\n`,
+        `<url><loc>${xmlEscape(origin)}/companies/${xmlEscape(companySlug(r.bidder_id))}</loc>${lastmod(r.last_date ?? fallback)}</url>\n`,
     );
     const last = results[results.length - 1];
     return { slugs, next: results.length < CHUNK || !last ? null : last.bidder_id };
@@ -90,6 +106,8 @@ export function streamContractSitemap(db: D1Database, origin: string, page: numb
   const hi = page * CONTRACTS_PER_SITEMAP;
   let after = lo;
   let done = false;
+  let fallback: string | null = null;
+  let fallbackLoaded = false;
   const enc = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
@@ -97,12 +115,16 @@ export function streamContractSitemap(db: D1Database, origin: string, page: numb
     },
     async pull(controller) {
       if (done) return;
+      if (!fallbackLoaded) {
+        fallback = await datasetAsOf(db);
+        fallbackLoaded = true;
+      }
       const { results } = await db
         .prepare(
-          `SELECT rowid AS rid, id FROM contracts WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
+          `SELECT rowid AS rid, id, signed_at, published_at FROM contracts WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?`,
         )
         .bind(after, hi, CHUNK)
-        .all<{ rid: number; id: string }>();
+        .all<{ rid: number; id: string; signed_at: string | null; published_at: string | null }>();
       if (results.length === 0) {
         controller.enqueue(enc.encode(TAIL));
         done = true;
@@ -112,7 +134,7 @@ export function streamContractSitemap(db: D1Database, origin: string, page: numb
       const block = results
         .map(
           (r) =>
-            `<url><loc>${xmlEscape(origin)}/contracts/${xmlEscape(r.id.replace(/^c:/, ''))}</loc></url>\n`,
+            `<url><loc>${xmlEscape(origin)}/contracts/${xmlEscape(r.id.replace(/^c:/, ''))}</loc>${lastmod(r.signed_at ?? r.published_at ?? fallback)}</url>\n`,
         )
         .join('');
       controller.enqueue(enc.encode(block));
