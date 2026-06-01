@@ -11,14 +11,20 @@ import { publicCache } from '../lib/cache';
 
 /**
  * Compose the muted sub-line under „Брой оферти". The AOP feed gives us the gross submitted count
- * (`bidsReceived`) plus three siblings — `bidsRejected`, `bidsSme`, `bidsNonEea`. We honour what
- * the source published: a non-NULL field is surfaced even when its value is 0 (an explicit „none"
- * is a real fact about the tender — e.g. „0 от МСП" means the bidder pool was all large firms).
- * Only NULL — meaning the source never published the field for this contract — is suppressed.
+ * (`bidsReceived`) plus three siblings — `bidsRejected`, `bidsSme`, `bidsNonEea`. Policy:
+ *
+ *   - `bidsRejected` — surface whenever populated, including 0. „0 отстранени" is informative as
+ *     the explicit „nobody was disqualified" — it tells the reader the rejection field was
+ *     reported, not that data is missing.
+ *   - `bidsSme`, `bidsNonEea` — surface only when > 0. A bare „0 от МСП" / „0 извън ЕИП" reads as
+ *     noise on the majority of contracts where the bidder pool happened not to include those
+ *     categories; the headline number already carries the full count.
+ *   - NULL on any field — the source never published it for this contract; always hide.
  *
  * Examples (real-data shapes):
  *   - received=25, rejected=24, sme=18, non_eea=NULL → „1 допусната · 24 отстранени · 18 от МСП"
- *   - received=67, rejected=0,  sme=0,  non_eea=NULL → „67 допуснати · 0 отстранени · 0 от МСП"
+ *   - received=67, rejected=0,  sme=0,  non_eea=NULL → „67 допуснати · 0 отстранени"
+ *   - received=8,  rejected=2,  sme=0,  non_eea=NULL → „6 допуснати · 2 отстранени"
  *   - received=N,  rejected=NULL, sme=NULL, non_eea=NULL → null (caller falls back to the source note)
  */
 function bidsBreakdown(c: ContractDetail): string | null {
@@ -29,8 +35,8 @@ function bidsBreakdown(c: ContractDetail): string | null {
     parts.push(`${count(admitted)} ${plural(admitted, 'допусната', 'допуснати')}`);
     parts.push(`${count(c.bidsRejected)} ${plural(c.bidsRejected, 'отстранена', 'отстранени')}`);
   }
-  if (c.bidsSme != null) parts.push(`${count(c.bidsSme)} от МСП`);
-  if (c.bidsNonEea != null) parts.push(`${count(c.bidsNonEea)} извън ЕИП`);
+  if (c.bidsSme != null && c.bidsSme > 0) parts.push(`${count(c.bidsSme)} от МСП`);
+  if (c.bidsNonEea != null && c.bidsNonEea > 0) parts.push(`${count(c.bidsNonEea)} извън ЕИП`);
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
