@@ -88,7 +88,7 @@ export async function listCompanies(
   db: D1Database,
   p: CompanyListParams,
 ): Promise<Page<CompanyListItem>> {
-  const sort = SORTS[p.sort ?? 'won'];
+  const sort = SORTS[p.sort as keyof typeof SORTS] ?? SORTS['won'];
   const pageSize = p.pageSize ?? 25;
   const src = source(p);
   const ew = entityWhere(p);
@@ -182,7 +182,7 @@ export function streamCompaniesCsv(db: D1Database, p: CompanyListParams): Respon
   };
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
-      c.enqueue(enc.encode(cols.join(',') + '\n'));
+      c.enqueue(enc.encode('﻿' + cols.join(',') + '\n'));
     },
     async pull(controller) {
       if (done) return;

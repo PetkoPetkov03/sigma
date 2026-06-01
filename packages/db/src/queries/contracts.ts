@@ -29,6 +29,12 @@ const SORTS: Record<ContractSort, { expr: string; dir: 'asc' | 'desc' }> = {
   'date-asc': { expr: "COALESCE(c.signed_at, '9999-99')", dir: 'asc' },
 };
 
+// A real signed_at year is YYYY at the head of the date; everything else (null, empty, malformed)
+// lands in the "unknown" bucket, whose facet value/filter token is this sentinel (a non-empty string
+// so it survives the URL round-trip — getMulti drops falsy tokens).
+const YEAR_KNOWN = "substr(c.signed_at, 1, 4) GLOB '[0-9][0-9][0-9][0-9]'";
+const YEAR_UNKNOWN = 'unknown';
+
 const VALUE_BUCKETS: Record<string, [number, number | null]> = {
   lt100k: [0, 100_000],
   '100k-1m': [100_000, 1_000_000],
@@ -72,8 +78,17 @@ function buildFilters(p: ContractListParams): { sql: string; params: unknown[] }
   const where: string[] = [];
   const params: unknown[] = [];
   if (p.years?.length) {
-    where.push(`substr(c.signed_at, 1, 4) IN (${qs(p.years.length)})`);
-    params.push(...p.years);
+    // The "Неизвестна" bucket (sentinel) matches null/malformed dates — the complement of YEAR_KNOWN.
+    const realYears = p.years.filter((y) => y !== YEAR_UNKNOWN);
+    const wantUnknown = realYears.length !== p.years.length;
+    const ors: string[] = [];
+    if (realYears.length) {
+      ors.push(`substr(c.signed_at, 1, 4) IN (${qs(realYears.length)})`);
+      params.push(...realYears);
+    }
+    // `NOT (GLOB)` is NULL (falsy) for a NULL signed_at, so spell out the NULL case to match the facet.
+    if (wantUnknown) ors.push(`(c.signed_at IS NULL OR NOT (${YEAR_KNOWN}))`);
+    if (ors.length) where.push(ors.length > 1 ? `(${ors.join(' OR ')})` : ors.join(''));
   }
   if (p.sectors?.length) {
     where.push(`substr(t.cpv_code, 1, 2) IN (${qs(p.sectors.length)})`);
@@ -143,7 +158,7 @@ export async function listContracts(
   // The caller may inject a (cached) summary to skip the COUNT/SUM scan — see apps/web KV caching.
   summaryOverride?: { total: number; valueEur: number; suspect: number },
 ): Promise<ContractListResult> {
-  const sort = SORTS[p.sort ?? 'value-desc'];
+  const sort = SORTS[p.sort as keyof typeof SORTS] ?? SORTS['value-desc'];
   const pageSize = p.pageSize ?? 15;
   const filters = buildFilters(p);
   const ks = keyset({ sortCol: sort.expr, idCol: 'c.id', dir: sort.dir, cursor: p.cursor });
@@ -201,7 +216,13 @@ export interface ContractFacets {
   eu: { all: number; eu: number; national: number };
 }
 
-/** Rail facets for the contracts list — all from precomputed counts (no per-request scans). */
+/**
+ * Rail facets for the contracts list. Procedure/sector/EU come from precomputed counts (no scans).
+ * The year facet is computed live from `contracts` so its buckets reconcile with the contracts total:
+ * the precomputed `facet_counts` year rows are clamped to a fixed date window and drop outlier years
+ * (2016/2019/2029) plus null/malformed dates, which silently hid ~36 rows. This grouped scan rides the
+ * `signed_at` index and yields every real year, plus a "Неизвестна" bucket for null/unparseable dates.
+ */
 export async function getContractFacets(db: D1Database): Promise<ContractFacets> {
   const facetRows = await db
     .prepare(`SELECT facet, key, contracts FROM facet_counts`)
@@ -209,12 +230,25 @@ export async function getContractFacets(db: D1Database): Promise<ContractFacets>
   const sectorRows = await db
     .prepare(`SELECT division, contracts FROM sector_totals`)
     .all<{ division: string; contracts: number }>();
+  const yearRows = await db
+    .prepare(
+      `SELECT CASE WHEN ${YEAR_KNOWN} THEN substr(c.signed_at, 1, 4) ELSE '${YEAR_UNKNOWN}' END AS key,
+              COUNT(*) AS contracts
+       FROM contracts c GROUP BY key`,
+    )
+    .all<{ key: string; contracts: number }>();
   const rows = facetRows.results;
 
-  const years = rows
-    .filter((r) => r.facet === 'year')
-    .sort((a, b) => b.key.localeCompare(a.key))
-    .map((r) => ({ value: r.key, label: r.key, count: r.contracts }));
+  const years = yearRows.results
+    // Real years descend (newest first); the "Неизвестна" bucket sinks to the bottom of the list.
+    .sort((a, b) =>
+      a.key === YEAR_UNKNOWN ? 1 : b.key === YEAR_UNKNOWN ? -1 : b.key.localeCompare(a.key),
+    )
+    .map((r) => ({
+      value: r.key,
+      label: r.key === YEAR_UNKNOWN ? 'Неизвестна' : r.key,
+      count: r.contracts,
+    }));
 
   const procByGroup = new Map<string, number>();
   for (const r of rows.filter((r) => r.facet === 'procedure')) {
@@ -284,7 +318,7 @@ export function streamContractsCsv(db: D1Database, p: ContractListParams): Respo
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      controller.enqueue(encoder.encode(CSV_COLUMNS.join(',') + '\n'));
+      controller.enqueue(encoder.encode('﻿' + CSV_COLUMNS.join(',') + '\n'));
     },
     async pull(controller) {
       if (done) return;

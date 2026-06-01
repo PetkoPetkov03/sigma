@@ -7,5 +7,8 @@ export function loader({ request, context }: Route.LoaderArgs) {
   return streamAuthoritiesCsv(context.cloudflare.env.DB, {
     sort: (sp.get('sort') as AuthoritySort) || 'spent',
     types: getMulti(sp, 'type'),
+    sectors: getMulti(sp, 'sector'),
+    years: getMulti(sp, 'year'),
+    eu: (sp.get('eu') as 'eu' | 'national' | null) || null,
   });
 }

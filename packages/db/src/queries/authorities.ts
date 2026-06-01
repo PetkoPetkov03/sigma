@@ -74,7 +74,7 @@ export async function listAuthorities(
   db: D1Database,
   p: AuthorityListParams,
 ): Promise<Page<AuthorityListItem>> {
-  const sort = SORTS[p.sort ?? 'spent'];
+  const sort = SORTS[p.sort as keyof typeof SORTS] ?? SORTS['spent'];
   const pageSize = p.pageSize ?? 25;
   const src = source(p);
   const ew = entityWhere(p);
@@ -136,6 +136,7 @@ export async function getAuthorityFacets(db: D1Database): Promise<AuthorityFacet
 
 /** Streamed CSV of the authority leaderboard (rollup; honours the type filter). */
 export function streamAuthoritiesCsv(db: D1Database, p: AuthorityListParams): Response {
+  const src = source(p);
   const ew = entityWhere(p);
   const cols = [
     'eik',
@@ -159,16 +160,14 @@ export function streamAuthoritiesCsv(db: D1Database, p: AuthorityListParams): Re
   };
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
-      c.enqueue(enc.encode(cols.join(',') + '\n'));
+      c.enqueue(enc.encode('﻿' + cols.join(',') + '\n'));
     },
     async pull(controller) {
       if (done) return;
       const conds = [ew.sql, 'authority_id > ?'].filter(Boolean).join(' AND ');
       const { results } = await db
-        .prepare(
-          `SELECT ${COLS} FROM authority_totals WHERE ${conds} ORDER BY authority_id LIMIT ?`,
-        )
-        .bind(...ew.params, afterId, CHUNK)
+        .prepare(`SELECT ${COLS} FROM ${src.from} WHERE ${conds} ORDER BY authority_id LIMIT ?`)
+        .bind(...src.params, ...ew.params, afterId, CHUNK)
         .all<AuthorityTotalsRow>();
       if (!results.length) {
         done = true;
