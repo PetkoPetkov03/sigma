@@ -4,6 +4,7 @@
 import type { ContractListItem, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS, PROCEDURE_GROUPS, procedureGroup } from '@sigma/config';
 import { entityName } from '@sigma/shared';
+import { csvCell } from './csv';
 import { authoritySlug, bidderIdFromSlug, companySlug, contractSlug } from './identity';
 import { keyset, pageCursors } from './keyset';
 
@@ -161,7 +162,13 @@ export async function listContracts(
   const sort = SORTS[p.sort as keyof typeof SORTS] ?? SORTS['value-desc'];
   const pageSize = p.pageSize ?? 15;
   const filters = buildFilters(p);
-  const ks = keyset({ sortCol: sort.expr, idCol: 'c.id', dir: sort.dir, cursor: p.cursor });
+  const ks = keyset({
+    sortCol: sort.expr,
+    idCol: 'c.id',
+    dir: sort.dir,
+    cursor: p.cursor,
+    allowedSortCols: Object.values(SORTS).map((s) => s.expr),
+  });
 
   const conds = [filters.sql ? filters.sql.slice(7) : '', ks.whereSql]
     .filter(Boolean)
@@ -181,6 +188,8 @@ export async function listContracts(
     rows: rows.map((r) => ({ sortValue: r.sort_value, id: r.id })),
     hasMore,
     incomingCursor: p.cursor,
+    cursor: ks.cursor,
+    sortToken: ks.cursorToken,
   });
 
   return {
@@ -295,12 +304,6 @@ const CSV_COLUMNS = [
   'eu_funded',
   'bids_received',
 ] as const;
-
-function csvCell(v: unknown): string {
-  if (v == null) return '';
-  const s = String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
 
 interface CsvRow extends ContractRow {
   rowid: number;

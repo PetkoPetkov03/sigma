@@ -76,16 +76,19 @@ export async function search(db: D1Database, rawQuery: string): Promise<SearchRe
         )
         .bind(g.kind, match, g.limit)
         .all<HitRow>();
-      const hits: SearchHit[] = results.map((r) => ({
-        kind: g.kind,
-        slug: hrefForEntity(g.kind, r.ref).split('/').pop()!,
-        href: hrefForEntity(g.kind, r.ref),
-        title: r.title,
-        ident: r.ident || null,
-        subtitle: r.subtitle || null,
-        amountEur: r.amount,
-        amountLabel: g.amountLabel,
-      }));
+      const hits: SearchHit[] = results.map((r) => {
+        const href = hrefForEntity(g.kind, r.ref);
+        return {
+          kind: g.kind,
+          slug: href.split('/').pop()!,
+          href,
+          title: r.title,
+          ident: r.ident || null,
+          subtitle: r.subtitle || null,
+          amountEur: r.amount,
+          amountLabel: g.amountLabel,
+        };
+      });
       return { kind: g.kind, label: g.label, total, hits, moreHref: null };
     }),
   );

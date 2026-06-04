@@ -4,6 +4,7 @@
 
 import type { CompanyListItem, EntityKind, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS, ENTITY_TYPES } from '@sigma/config';
+import { csvCell } from './csv';
 import { keyset, pageCursors } from './keyset';
 import { toCompanyListItem, type CompanyTotalsRow } from './rows';
 
@@ -39,8 +40,12 @@ const qs = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
 const COLS = `bidder_id, name, kind, eik, eik_valid, settlement, won_eur, contracts, authorities, primary_sector, eu_eur, first_date, last_date`;
 
+function normalizeEu(eu: unknown): 'eu' | 'national' | null {
+  return eu === 'eu' || eu === 'national' ? eu : null;
+}
+
 function needsBase(p: CompanyListParams): boolean {
-  return Boolean(p.sectors?.length || p.years?.length || (p.eu && p.eu !== ('all' as string)));
+  return Boolean(p.sectors?.length || p.years?.length || normalizeEu(p.eu));
 }
 
 /** The FROM source: the rollup table, or a scoped base-aggregation CTE for sector/year/EU cross-cuts. */
@@ -56,8 +61,9 @@ function source(p: CompanyListParams): { from: string; params: unknown[] } {
     where.push(`substr(c.signed_at, 1, 4) IN (${qs(p.years.length)})`);
     params.push(...p.years);
   }
-  if (p.eu === 'eu') where.push('c.eu_funded = 1');
-  else if (p.eu === 'national') where.push('(c.eu_funded IS NULL OR c.eu_funded = 0)');
+  const eu = normalizeEu(p.eu);
+  if (eu === 'eu') where.push('c.eu_funded = 1');
+  else if (eu === 'national') where.push('(c.eu_funded IS NULL OR c.eu_funded = 0)');
   const single = p.sectors?.length === 1 ? p.sectors[0]! : null;
   const from = `(
     SELECT b.id AS bidder_id, b.name, b.kind, b.eik_normalized AS eik, b.eik_valid, b.settlement,
@@ -92,24 +98,35 @@ export async function listCompanies(
   const pageSize = p.pageSize ?? 25;
   const src = source(p);
   const ew = entityWhere(p);
-  const ks = keyset({ sortCol: sort.col, idCol: 'bidder_id', dir: sort.dir, cursor: p.cursor });
+  const ks = keyset({
+    sortCol: sort.col,
+    idCol: 'bidder_id',
+    dir: sort.dir,
+    cursor: p.cursor,
+    allowedSortCols: Object.values(SORTS).map((s) => s.col),
+  });
   const conds = [ew.sql, ks.whereSql].filter(Boolean).join(' AND ');
 
   const sql = `SELECT ${COLS}, ${sort.col} AS sort_value FROM ${src.from}${conds ? ' WHERE ' + conds : ''} ${ks.orderSql} LIMIT ?`;
-  const { results } = await db
-    .prepare(sql)
-    .bind(...src.params, ...ew.params, ...ks.params, pageSize + 1)
-    .all<CompanyTotalsRow & { sort_value: string | number }>();
+  const [pageRows, total] = await Promise.all([
+    db
+      .prepare(sql)
+      .bind(...src.params, ...ew.params, ...ks.params, pageSize + 1)
+      .all<CompanyTotalsRow & { sort_value: string | number }>(),
+    countCompanies(db, src, ew),
+  ]);
+  const { results } = pageRows;
 
   const hasMore = results.length > pageSize;
   let rows = results.slice(0, pageSize);
   if (ks.reverse) rows = rows.reverse();
 
-  const total = await countCompanies(db, src, ew);
   const cursors = pageCursors({
     rows: rows.map((r) => ({ sortValue: r.sort_value, id: r.bidder_id })),
     hasMore,
     incomingCursor: p.cursor,
+    cursor: ks.cursor,
+    sortToken: ks.cursorToken,
   });
   return { items: rows.map(toCompanyListItem), total, ...cursors };
 }
@@ -158,8 +175,9 @@ export async function getCompanyFacets(db: D1Database): Promise<CompanyFacets> {
   return { kinds, sectors };
 }
 
-/** Streamed CSV of the company leaderboard (rollup; honours kind/count-bucket). */
+/** Streamed CSV of the company leaderboard (honours the same filters as the list page). */
 export function streamCompaniesCsv(db: D1Database, p: CompanyListParams): Response {
+  const src = source(p);
   const ew = entityWhere(p);
   const cols = [
     'eik',
@@ -175,11 +193,6 @@ export function streamCompaniesCsv(db: D1Database, p: CompanyListParams): Respon
   let afterId = '';
   let done = false;
   const enc = new TextEncoder();
-  const cell = (v: unknown) => {
-    if (v == null) return '';
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
       c.enqueue(enc.encode('﻿' + cols.join(',') + '\n'));
@@ -188,8 +201,8 @@ export function streamCompaniesCsv(db: D1Database, p: CompanyListParams): Respon
       if (done) return;
       const conds = [ew.sql, 'bidder_id > ?'].filter(Boolean).join(' AND ');
       const { results } = await db
-        .prepare(`SELECT ${COLS} FROM company_totals WHERE ${conds} ORDER BY bidder_id LIMIT ?`)
-        .bind(...ew.params, afterId, CHUNK)
+        .prepare(`SELECT ${COLS} FROM ${src.from} WHERE ${conds} ORDER BY bidder_id LIMIT ?`)
+        .bind(...src.params, ...ew.params, afterId, CHUNK)
         .all<CompanyTotalsRow>();
       if (!results.length) {
         done = true;
@@ -209,7 +222,7 @@ export function streamCompaniesCsv(db: D1Database, p: CompanyListParams): Respon
             r.authorities,
             r.primary_sector,
           ]
-            .map(cell)
+            .map(csvCell)
             .join(',') + '\n';
         afterId = r.bidder_id;
       }

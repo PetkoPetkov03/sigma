@@ -4,6 +4,7 @@
 
 import type { AuthorityListItem, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS } from '@sigma/config';
+import { csvCell } from './csv';
 import { keyset, pageCursors } from './keyset';
 import { toAuthorityListItem, typeLabel, type AuthorityTotalsRow } from './rows';
 
@@ -30,8 +31,12 @@ const qs = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
 const COLS = `authority_id, name, type_group, settlement, region, spent_eur, contracts, suppliers, avg_eur, primary_sector, eu_eur, first_date, last_date`;
 
+function normalizeEu(eu: unknown): 'eu' | 'national' | null {
+  return eu === 'eu' || eu === 'national' ? eu : null;
+}
+
 function needsBase(p: AuthorityListParams): boolean {
-  return Boolean(p.sectors?.length || p.years?.length || (p.eu && p.eu !== ('all' as string)));
+  return Boolean(p.sectors?.length || p.years?.length || normalizeEu(p.eu));
 }
 
 function source(p: AuthorityListParams): { from: string; params: unknown[] } {
@@ -46,8 +51,9 @@ function source(p: AuthorityListParams): { from: string; params: unknown[] } {
     where.push(`substr(c.signed_at, 1, 4) IN (${qs(p.years.length)})`);
     params.push(...p.years);
   }
-  if (p.eu === 'eu') where.push('c.eu_funded = 1');
-  else if (p.eu === 'national') where.push('(c.eu_funded IS NULL OR c.eu_funded = 0)');
+  const eu = normalizeEu(p.eu);
+  if (eu === 'eu') where.push('c.eu_funded = 1');
+  else if (eu === 'national') where.push('(c.eu_funded IS NULL OR c.eu_funded = 0)');
   const single = p.sectors?.length === 1 ? p.sectors[0]! : null;
   const from = `(
     SELECT a.id AS authority_id, a.name, a.type_group, a.settlement, a.region,
@@ -78,27 +84,38 @@ export async function listAuthorities(
   const pageSize = p.pageSize ?? 25;
   const src = source(p);
   const ew = entityWhere(p);
-  const ks = keyset({ sortCol: sort.col, idCol: 'authority_id', dir: sort.dir, cursor: p.cursor });
+  const ks = keyset({
+    sortCol: sort.col,
+    idCol: 'authority_id',
+    dir: sort.dir,
+    cursor: p.cursor,
+    allowedSortCols: Object.values(SORTS).map((s) => s.col),
+  });
   const conds = [ew.sql, ks.whereSql].filter(Boolean).join(' AND ');
 
   const sql = `SELECT ${COLS}, ${sort.col} AS sort_value FROM ${src.from}${conds ? ' WHERE ' + conds : ''} ${ks.orderSql} LIMIT ?`;
-  const { results } = await db
-    .prepare(sql)
-    .bind(...src.params, ...ew.params, ...ks.params, pageSize + 1)
-    .all<AuthorityTotalsRow & { sort_value: string | number }>();
+  const [pageRows, totalRow] = await Promise.all([
+    db
+      .prepare(sql)
+      .bind(...src.params, ...ew.params, ...ks.params, pageSize + 1)
+      .all<AuthorityTotalsRow & { sort_value: string | number }>(),
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM ${src.from}${ew.sql ? ' WHERE ' + ew.sql : ''}`)
+      .bind(...src.params, ...ew.params)
+      .first<{ n: number }>(),
+  ]);
+  const { results } = pageRows;
 
   const hasMore = results.length > pageSize;
   let rows = results.slice(0, pageSize);
   if (ks.reverse) rows = rows.reverse();
 
-  const totalRow = await db
-    .prepare(`SELECT COUNT(*) AS n FROM ${src.from}${ew.sql ? ' WHERE ' + ew.sql : ''}`)
-    .bind(...src.params, ...ew.params)
-    .first<{ n: number }>();
   const cursors = pageCursors({
     rows: rows.map((r) => ({ sortValue: r.sort_value, id: r.authority_id })),
     hasMore,
     incomingCursor: p.cursor,
+    cursor: ks.cursor,
+    sortToken: ks.cursorToken,
   });
   return { items: rows.map(toAuthorityListItem), total: totalRow?.n ?? 0, ...cursors };
 }
@@ -111,15 +128,15 @@ export interface AuthorityFacets {
 export async function getAuthorityFacets(db: D1Database): Promise<AuthorityFacets> {
   const typeRows = await db
     .prepare(
-      `SELECT type_group, COUNT(*) AS n FROM authority_totals GROUP BY type_group ORDER BY n DESC`,
+      `SELECT COALESCE(type_group, 'друго') AS type_group, COUNT(*) AS n FROM authority_totals GROUP BY COALESCE(type_group, 'друго') ORDER BY n DESC`,
     )
-    .all<{ type_group: string | null; n: number }>();
+    .all<{ type_group: string; n: number }>();
   const sectorRows = await db
     .prepare(`SELECT division, value_eur FROM sector_totals`)
     .all<{ division: string; value_eur: number }>();
 
   const types: FacetCount[] = typeRows.results.map((r) => ({
-    value: r.type_group ?? 'друго',
+    value: r.type_group,
     label: typeLabel(r.type_group) ?? 'друго',
     count: r.n,
   }));
@@ -153,11 +170,6 @@ export function streamAuthoritiesCsv(db: D1Database, p: AuthorityListParams): Re
   let afterId = '';
   let done = false;
   const enc = new TextEncoder();
-  const cell = (v: unknown) => {
-    if (v == null) return '';
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
   const stream = new ReadableStream<Uint8Array>({
     start(c) {
       c.enqueue(enc.encode('﻿' + cols.join(',') + '\n'));
@@ -188,7 +200,7 @@ export function streamAuthoritiesCsv(db: D1Database, p: AuthorityListParams): Re
             r.suppliers,
             Math.round(r.avg_eur),
           ]
-            .map(cell)
+            .map(csvCell)
             .join(',') + '\n';
         afterId = r.authority_id;
       }

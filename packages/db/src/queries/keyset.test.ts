@@ -7,10 +7,28 @@ describe('cursor encode/decode', () => {
     const d = decodeCursor(c);
     expect(d).toEqual({ dir: 'after', value: 50_840_000_000, id: 'eik:103267194' });
   });
+  it('round-trips Cyrillic string values and UTF-8 ids', () => {
+    const c = encodeCursor('before', 'доставка на услуги', 'auth:тест-123', 'abc123');
+    const d = decodeCursor(c);
+    expect(d).toEqual({
+      dir: 'before',
+      value: 'доставка на услуги',
+      id: 'auth:тест-123',
+      sortToken: 'abc123',
+    });
+  });
   it('rejects malformed cursors', () => {
     expect(decodeCursor(null)).toBeNull();
     expect(decodeCursor('garbage')).toBeNull();
     expect(decodeCursor('sideways:Zm9v')).toBeNull();
+  });
+  it('ignores cursors bound to a different sort token', () => {
+    const c = encodeCursor('after', 10, 'x', 'old-sort');
+    expect(decodeCursor(c, 'new-sort')).toBeNull();
+  });
+  it('ignores tokenless cursors when a sort token is expected', () => {
+    const c = encodeCursor('after', 10, 'x');
+    expect(decodeCursor(c, 'new-sort')).toBeNull();
   });
 });
 
@@ -22,7 +40,8 @@ describe('keyset clause', () => {
     expect(k.reverse).toBe(false);
   });
   it('builds a forward (after) predicate keeping the natural direction', () => {
-    const cursor = encodeCursor('after', 1000, 'x');
+    const firstPage = keyset({ sortCol: 'won_eur', idCol: 'bidder_id', dir: 'desc' });
+    const cursor = encodeCursor('after', 1000, 'x', firstPage.cursorToken);
     const k = keyset({ sortCol: 'won_eur', idCol: 'bidder_id', dir: 'desc', cursor });
     expect(k.whereSql).toContain('won_eur < ?');
     expect(k.orderSql).toContain('DESC');
@@ -30,11 +49,25 @@ describe('keyset clause', () => {
     expect(k.reverse).toBe(false);
   });
   it('inverts direction for a backward (before) cursor and flags reverse', () => {
-    const cursor = encodeCursor('before', 1000, 'x');
+    const firstPage = keyset({ sortCol: 'won_eur', idCol: 'bidder_id', dir: 'desc' });
+    const cursor = encodeCursor('before', 1000, 'x', firstPage.cursorToken);
     const k = keyset({ sortCol: 'won_eur', idCol: 'bidder_id', dir: 'desc', cursor });
     expect(k.whereSql).toContain('won_eur > ?');
     expect(k.orderSql).toBe('ORDER BY won_eur ASC, bidder_id ASC');
     expect(k.reverse).toBe(true);
+  });
+  it('rejects unsafe sort fragments unless explicitly allowlisted', () => {
+    expect(() =>
+      keyset({ sortCol: 'won_eur; DROP TABLE contracts', idCol: 'bidder_id', dir: 'desc' }),
+    ).toThrow(/Unsafe keyset sortCol/);
+    expect(
+      keyset({
+        sortCol: 'COALESCE(c.amount_eur, -1)',
+        idCol: 'c.id',
+        dir: 'desc',
+        allowedSortCols: ['COALESCE(c.amount_eur, -1)'],
+      }).orderSql,
+    ).toBe('ORDER BY COALESCE(c.amount_eur, -1) DESC, c.id DESC');
   });
 });
 
@@ -57,5 +90,23 @@ describe('pageCursors', () => {
     });
     expect(decodeCursor(prevCursor)).toMatchObject({ dir: 'before', value: 900, id: 'a' });
     expect(nextCursor).toBeNull();
+  });
+  it('before page: next always returns toward the page we came from, prev only when more', () => {
+    const incoming = encodeCursor('before', 700, 'c');
+    const noMore = pageCursors({
+      rows,
+      hasMore: false,
+      incomingCursor: incoming,
+    });
+    expect(noMore.prevCursor).toBeNull();
+    expect(decodeCursor(noMore.nextCursor)).toMatchObject({ dir: 'after', value: 800, id: 'b' });
+
+    const more = pageCursors({
+      rows,
+      hasMore: true,
+      incomingCursor: incoming,
+    });
+    expect(decodeCursor(more.prevCursor)).toMatchObject({ dir: 'before', value: 900, id: 'a' });
+    expect(decodeCursor(more.nextCursor)).toMatchObject({ dir: 'after', value: 800, id: 'b' });
   });
 });

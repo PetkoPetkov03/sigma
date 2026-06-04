@@ -457,9 +457,9 @@ export async function getContract(
   const value: ContractValueTimeline = {
     estimatedEur: eurFromNative(r.estimated_value, r.tender_currency),
     signingEur,
-    currentEur: r.value_flag === 'value_suspect' ? null : (currentRaw ?? signingEur),
+    currentEur: suspect ? null : (currentRaw ?? signingEur),
     deltaPct:
-      currentRaw != null && signingEur != null && signingEur !== 0
+      !suspect && currentRaw != null && signingEur != null && signingEur !== 0
         ? (currentRaw - signingEur) / signingEur
         : null,
     suspect,
