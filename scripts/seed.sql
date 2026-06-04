@@ -1,4 +1,6 @@
 -- Sample data for local development. Idempotent (INSERT OR IGNORE).
+-- Dev-only smoke seed: these ids/statuses do not exercise the production identity keys or rollup
+-- conventions used by the admin/OCDS normalization pipeline.
 
 INSERT OR IGNORE INTO authorities (id, name, bulstat, region) VALUES
   ('auth-sofia', 'Община София', '000696327', 'София-град'),

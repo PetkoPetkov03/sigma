@@ -14,9 +14,9 @@
 -- the same file also bootstrap a database created before these tables existed.
 --
 -- COUNT/SUM CONSISTENCY: a paired (count, sum) covers ONE row set — contracts with a clean
--- amount_eur. value_suspect rows (NULL amount_eur) are excluded from both and surfaced as a
--- „N с непотвърдена стойност" note, never counted-but-unsummed. The home/list CORPUS counts use
--- COUNT(*) (a record count, not the count behind a sum) and pair the suspect tally alongside.
+-- amount_eur. NULL amount_eur rows are excluded from sums; the suspect KPI specifically counts
+-- value_suspect rows, so FX-rateless foreign rows are not mislabeled as suspect. The home/list
+-- CORPUS counts use COUNT(*) (a record count, not the count behind a sum) and pair that tally alongside.
 
 -- ── 0) Per-contract EUR value timeline ────────────────────────────────────────────────────────
 -- signing/current in EUR for the contract page's estimated→signing→current strip and contractValue().
@@ -39,24 +39,13 @@ UPDATE contracts SET
     WHEN fx_rate IS NOT NULL THEN current_value * fx_rate
     ELSE NULL END;
 
--- ── 1) home_totals (1 row) ──────────────────────────────────────────────────────────────────────
+-- ── 1) home_totals shell (filled after company/authority rollups exist) ──────────────────────────
 CREATE TABLE IF NOT EXISTS home_totals (
   id INTEGER PRIMARY KEY CHECK (id = 1), contracts INTEGER NOT NULL, value_eur REAL NOT NULL,
   authorities INTEGER NOT NULL, bidders INTEGER NOT NULL, suspect INTEGER NOT NULL,
   first_date TEXT, last_date TEXT, as_of TEXT, refreshed_at TEXT NOT NULL
 );
 DELETE FROM home_totals;
-INSERT INTO home_totals (id, contracts, value_eur, authorities, bidders, suspect, first_date, last_date, as_of, refreshed_at)
-SELECT 1,
-  (SELECT COUNT(*) FROM contracts),
-  (SELECT COALESCE(SUM(amount_eur), 0) FROM contracts),
-  (SELECT COUNT(*) FROM authorities),
-  (SELECT COUNT(*) FROM bidders),
-  (SELECT COUNT(*) FROM contracts WHERE amount_eur IS NULL),
-  (SELECT MIN(signed_at) FROM contracts WHERE signed_at >= '2020-01-01' AND signed_at <= date('now')),
-  (SELECT MAX(signed_at) FROM contracts WHERE signed_at <= date('now')),
-  (SELECT as_of FROM data_freshness WHERE source = 'admin'),
-  datetime('now');
 
 -- ── 2) company_totals (per bidder; clean rows only so won_eur pairs with contracts) ───────────────
 CREATE TABLE IF NOT EXISTS company_totals (
@@ -101,6 +90,20 @@ UPDATE authority_totals SET primary_sector = (
   WHERE t.authority_id = authority_totals.authority_id AND c.amount_eur IS NOT NULL AND COALESCE(t.cpv_code,'') <> ''
   GROUP BY substr(t.cpv_code, 1, 2) ORDER BY SUM(c.amount_eur) DESC, substr(t.cpv_code, 1, 2) LIMIT 1);
 
+-- home_totals uses the browsable leaderboard grains for authority/bidder counts, and the same
+-- freshness definition as refresh-slice.sql: latest in-corpus signed contract date.
+INSERT INTO home_totals (id, contracts, value_eur, authorities, bidders, suspect, first_date, last_date, as_of, refreshed_at)
+SELECT 1,
+  (SELECT COUNT(*) FROM contracts),
+  (SELECT COALESCE(SUM(amount_eur), 0) FROM contracts),
+  (SELECT COUNT(*) FROM authority_totals),
+  (SELECT COUNT(*) FROM company_totals),
+  (SELECT COUNT(*) FROM contracts WHERE value_flag = 'value_suspect'),
+  (SELECT MIN(signed_at) FROM contracts WHERE signed_at >= '2020-01-01' AND signed_at <= date('now')),
+  (SELECT MAX(signed_at) FROM contracts WHERE signed_at <= date('now')),
+  (SELECT MAX(signed_at) FROM contracts WHERE signed_at <= date('now')),
+  datetime('now');
+
 -- ── 4) sector_totals (per CPV division) ─────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS sector_totals (
   division TEXT PRIMARY KEY, contracts INTEGER NOT NULL, value_eur REAL NOT NULL
@@ -112,16 +115,12 @@ FROM contracts c JOIN tenders t ON t.id = c.tender_id
 WHERE c.amount_eur IS NOT NULL AND COALESCE(t.cpv_code,'') <> ''
 GROUP BY substr(t.cpv_code, 1, 2);
 
--- ── 4b) facet_counts (year / procedure_type / EU) ─────────────────────────────────────────────────
+-- ── 4b) facet_counts (procedure_type / EU; year is recomputed live by getContractFacets) ───────────
 CREATE TABLE IF NOT EXISTS facet_counts (
   facet TEXT NOT NULL, key TEXT NOT NULL, contracts INTEGER NOT NULL, value_eur REAL NOT NULL,
   PRIMARY KEY (facet, key)
 );
 DELETE FROM facet_counts;
-INSERT INTO facet_counts (facet, key, contracts, value_eur)
-SELECT 'year', substr(c.signed_at, 1, 4), COUNT(*), COALESCE(SUM(c.amount_eur), 0)
-FROM contracts c WHERE c.signed_at >= '2020-01-01' AND c.signed_at < '2027-01-01'
-GROUP BY substr(c.signed_at, 1, 4);
 INSERT INTO facet_counts (facet, key, contracts, value_eur)
 SELECT 'procedure', t.procedure_type, COUNT(*), COALESCE(SUM(c.amount_eur), 0)
 FROM contracts c JOIN tenders t ON t.id = c.tender_id

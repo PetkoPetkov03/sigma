@@ -77,13 +77,19 @@ GROUP BY c.unp;
 DELETE FROM contracts WHERE id GLOB 'c:o:*';
 INSERT OR IGNORE INTO contracts
   (id, tender_id, bidder_id, amount, currency, signed_at, contract_number, signing_value, current_value,
-   annex_count, eu_funded, bids_received, contract_kind, value_flag, amount_eur, fx_converted, fx_rate,
-   signing_value_eur, current_value_eur, published_at, contract_subject)
+   annex_count, eu_funded, bids_received, contract_kind, awarded_to_group, value_flag, amount_eur,
+   fx_converted, fx_rate, signing_value_eur, current_value_eur,
+   lot_id, document_number, published_at, contract_subject,
+   eu_programme, duration_days, winner_size, contractor_country,
+   bids_sme, bids_rejected, bids_non_eea,
+   subcontractor_eik, subcontractor_name, subcontract_value,
+   eauction, framework, accelerated, strategic)
 SELECT
-  'c:o:' || x.unp || ':' || x.contract_number,
+  'c:o:' || x.unp || ':' || x.contract_number || ':' ||
+    COALESCE(NULLIF(x.lot_id, ''), '_') || ':' || x.bidder_key || ':' || x.contract_ordinal,
   't:' || x.unp,
   x.bidder_key,
-  COALESCE(x.current_value, x.signing_value),
+  x.display_native,
   COALESCE(x.currency, 'BGN'),
   x.contract_date,
   x.contract_number,
@@ -93,53 +99,101 @@ SELECT
   x.eu_funded,
   x.bids_received,
   x.contract_kind,
+  x.awarded_to_group,
   x.value_flag,
   x.amount_eur,
   CASE WHEN COALESCE(x.currency, 'BGN') NOT IN ('BGN', 'EUR') THEN 1 ELSE 0 END,
   x.fx_rate,
-  CASE WHEN x.value_flag = 'value_suspect' THEN NULL ELSE x.amount_eur END,
-  CASE WHEN x.value_flag IN ('value_suspect', 'annex_suspect') THEN NULL
-       WHEN x.current_value IS NULL THEN NULL ELSE x.amount_eur END,
+  x.signing_value_eur,
+  x.current_value_eur,
+  CASE WHEN x.lot_id IS NOT NULL AND TRIM(x.lot_id) <> '' THEN 'lot:' || x.unp || ':' || x.lot_id ELSE NULL END,
+  x.document_number,
   x.published_at,
-  x.contract_subject
+  x.contract_subject,
+  x.eu_programme,
+  x.duration_days,
+  x.winner_size,
+  x.contractor_country,
+  x.bids_sme,
+  x.bids_rejected,
+  x.bids_non_eea,
+  x.subcontractor_eik,
+  x.subcontractor_name,
+  x.subcontract_value,
+  x.eauction,
+  x.framework_contract,
+  x.accelerated,
+  x.strategic
 FROM (
-  SELECT y.*,
-    -- fx: EUR as-is, BGN at the peg, foreign at the signing-date ECB rate (NULL if missing)
-    CASE WHEN COALESCE(y.currency,'BGN') NOT IN ('BGN','EUR')
-      THEN (SELECT f.eur_per_unit FROM fx_rates f WHERE f.base_currency = y.currency AND f.rate_date = y.contract_date)
-      ELSE NULL END AS fx_rate,
+  SELECT q.*,
     CASE
-      WHEN y.value_flag = 'value_suspect' THEN NULL
-      WHEN COALESCE(y.currency,'BGN') = 'EUR' THEN COALESCE(y.current_value, y.signing_value)
-      WHEN COALESCE(y.currency,'BGN') = 'BGN' THEN COALESCE(y.current_value, y.signing_value) / 1.95583
-      ELSE COALESCE(y.current_value, y.signing_value) * (SELECT f.eur_per_unit FROM fx_rates f WHERE f.base_currency = y.currency AND f.rate_date = y.contract_date)
-    END AS amount_eur
+      WHEN q.value_flag = 'value_suspect' THEN NULL
+      WHEN COALESCE(q.currency,'BGN') = 'EUR' THEN q.trusted_native
+      WHEN COALESCE(q.currency,'BGN') = 'BGN' THEN q.trusted_native / 1.95583
+      ELSE q.trusted_native * q.fx_rate
+    END AS amount_eur,
+    CASE
+      WHEN q.value_flag = 'value_suspect' OR q.signing_value IS NULL THEN NULL
+      WHEN COALESCE(q.currency,'BGN') = 'EUR' THEN q.signing_value
+      WHEN COALESCE(q.currency,'BGN') = 'BGN' THEN q.signing_value / 1.95583
+      ELSE q.signing_value * q.fx_rate
+    END AS signing_value_eur,
+    CASE
+      WHEN q.value_flag IN ('value_suspect', 'annex_suspect') OR q.current_value IS NULL THEN NULL
+      WHEN COALESCE(q.currency,'BGN') = 'EUR' THEN q.current_value
+      WHEN COALESCE(q.currency,'BGN') = 'BGN' THEN q.current_value / 1.95583
+      ELSE q.current_value * q.fx_rate
+    END AS current_value_eur
   FROM (
-    SELECT c.*,
-      CASE
-        WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
-        WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
-        WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
-        ELSE 'ok'
-      END AS value_flag,
-      CASE
-        WHEN TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END) NOT GLOB '*[^0-9]*'
-         AND LENGTH(TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)) IN (9, 13)
-        THEN 'eik:' || TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)
-        WHEN c.contractor_name IS NOT NULL AND TRIM(c.contractor_name) <> '' THEN 'name:' || UPPER(TRIM(REPLACE(REPLACE(c.contractor_name, '  ', ' '), '  ', ' ')))
-        ELSE NULL
-      END AS bidder_key
-    FROM raw_egov_contracts c
-    WHERE c.source LIKE 'ocds:%' AND c.contract_number IS NOT NULL
-  ) y
+    SELECT y.*,
+      CASE y.value_flag
+        WHEN 'annex_suspect' THEN COALESCE(y.signing_value, y.current_value)
+        ELSE COALESCE(y.current_value, y.signing_value)
+      END AS display_native,
+      CASE y.value_flag
+        WHEN 'value_suspect' THEN NULL
+        WHEN 'annex_suspect' THEN COALESCE(y.signing_value, y.current_value)
+        ELSE COALESCE(y.current_value, y.signing_value)
+      END AS trusted_native,
+      -- fx: EUR as-is, BGN at the peg, foreign at the signing-date ECB rate (NULL if missing)
+      CASE WHEN COALESCE(y.currency,'BGN') NOT IN ('BGN','EUR')
+        THEN (SELECT f.eur_per_unit FROM fx_rates f WHERE f.base_currency = y.currency AND f.rate_date = y.contract_date)
+        ELSE NULL END AS fx_rate
+    FROM (
+      SELECT z.*,
+        ROW_NUMBER() OVER (
+          PARTITION BY z.unp, z.contract_number, z.bidder_key, COALESCE(NULLIF(z.lot_id, ''), '_')
+          ORDER BY z.id
+        ) AS contract_ordinal
+      FROM (
+        SELECT c.*,
+          CASE
+            WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
+            WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+            WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
+            ELSE 'ok'
+          END AS value_flag,
+          CASE
+            WHEN TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END) NOT GLOB '*[^0-9]*'
+             AND LENGTH(TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)) IN (9, 13)
+            THEN 'eik:' || TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)
+            WHEN c.contractor_name IS NOT NULL AND TRIM(c.contractor_name) <> '' THEN 'name:' || UPPER(TRIM(REPLACE(REPLACE(c.contractor_name, '  ', ' '), '  ', ' ')))
+            ELSE NULL
+          END AS bidder_key
+        FROM raw_egov_contracts c
+        -- OCDS contract rows currently do not get amendment rollups, so current_value should be NULL.
+        -- The COALESCE/annex branches above intentionally mirror normalize-egov.sql if that changes.
+        WHERE c.source LIKE 'ocds:%' AND c.contract_number IS NOT NULL
+      ) z
+    ) y
+  ) q
 ) x
 WHERE x.bidder_key IS NOT NULL
-  AND COALESCE(x.current_value, x.signing_value) IS NOT NULL
+  AND x.display_native IS NOT NULL
   AND EXISTS (SELECT 1 FROM tenders te WHERE te.id = 't:' || x.unp)
   AND EXISTS (SELECT 1 FROM bidders b WHERE b.id = x.bidder_key)
   -- base wins: skip if any non-refresh contract already represents this АОП document number
-  AND NOT EXISTS (SELECT 1 FROM contracts c2 WHERE c2.contract_number = x.contract_number AND c2.id NOT GLOB 'c:o:*')
-GROUP BY 'c:o:' || x.unp || ':' || x.contract_number;
+  AND NOT EXISTS (SELECT 1 FROM contracts c2 WHERE c2.contract_number = x.contract_number AND c2.id NOT GLOB 'c:o:*');
 
 -- ── 5) Refresh rollups + FTS for the AFFECTED entities only, then the small globals ─────────────────
 -- Affected = entities involved in a refresh-derived ('c:o:%') contract. The two affected-sets are
@@ -197,17 +251,18 @@ SELECT 'contract', c.id, COALESCE(NULLIF(c.contract_subject, ''), t.title), COAL
 FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
 WHERE c.id GLOB 'c:o:*' AND COALESCE(NULLIF(c.contract_subject, ''), t.title) IS NOT NULL;
 
--- Small global rollups — recomputed in full (one-row / 45-row / 7-row results; cheap per refresh).
+-- Small global rollups — recomputed in full (one-row / small facet tables; cheap per refresh).
 DELETE FROM home_totals;
 INSERT INTO home_totals (id, contracts, value_eur, authorities, bidders, suspect, first_date, last_date, as_of, refreshed_at)
 SELECT 1,
   (SELECT COUNT(*) FROM contracts),
   (SELECT COALESCE(SUM(amount_eur), 0) FROM contracts),
-  (SELECT COUNT(*) FROM authorities),
-  (SELECT COUNT(*) FROM bidders),
-  (SELECT COUNT(*) FROM contracts WHERE amount_eur IS NULL),
+  (SELECT COUNT(*) FROM authority_totals),
+  (SELECT COUNT(*) FROM company_totals),
+  (SELECT COUNT(*) FROM contracts WHERE value_flag = 'value_suspect'),
   (SELECT MIN(signed_at) FROM contracts WHERE signed_at >= '2020-01-01' AND signed_at <= date('now')),
   (SELECT MAX(signed_at) FROM contracts WHERE signed_at <= date('now')),
+  -- Freshness is the latest in-corpus signed contract date; refresh-slice does not maintain data_freshness.
   (SELECT MAX(signed_at) FROM contracts WHERE signed_at <= date('now')),
   datetime('now');
 
@@ -220,12 +275,8 @@ GROUP BY substr(t.cpv_code, 1, 2);
 
 DELETE FROM facet_counts;
 INSERT INTO facet_counts (facet, key, contracts, value_eur)
-SELECT 'year', substr(c.signed_at, 1, 4), COUNT(*), COALESCE(SUM(c.amount_eur), 0)
-FROM contracts c WHERE c.signed_at >= '2020-01-01' AND c.signed_at < '2027-01-01' GROUP BY substr(c.signed_at, 1, 4);
-INSERT INTO facet_counts (facet, key, contracts, value_eur)
 SELECT 'procedure', t.procedure_type, COUNT(*), COALESCE(SUM(c.amount_eur), 0)
 FROM contracts c JOIN tenders t ON t.id = c.tender_id GROUP BY t.procedure_type;
 INSERT INTO facet_counts (facet, key, contracts, value_eur)
 SELECT 'eu', CASE WHEN c.eu_funded = 1 THEN '1' ELSE '0' END, COUNT(*), COALESCE(SUM(c.amount_eur), 0)
 FROM contracts c GROUP BY CASE WHEN c.eu_funded = 1 THEN '1' ELSE '0' END;
-

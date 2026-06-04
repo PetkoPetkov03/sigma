@@ -190,11 +190,12 @@ GROUP BY bidder_key;
 --    with the data-quality verdict (see 0007_data_quality.sql):
 --      value_flag = 'value_suspect'  signed value ≥100× estimate (untrustworthy, excluded from sums)
 --                 | 'annex_suspect'  amendment pushed current_value ≥100× signing, or negative →
---                                    fall back to the sane signing value (the contract still counts)
+--                                    fall back to signing_value, or current_value if signing is
+--                                    missing, so the contract still counts
 --                 | 'review'         10–100× estimate (kept, but flagged)
 --                 | 'ok'
 --    `amount` is the as-recorded display value (current_value when an annex legitimately raised it,
---    else signing; signing for annex_suspect). `amount_eur` is the SAFE-TO-SUM canonical value:
+--    else signing; signing/current fallback for annex_suspect). `amount_eur` is the SAFE-TO-SUM canonical value:
 --    BGN→EUR at the fixed peg (÷1.95583), EUR as-is, foreign at the signing-date ECB rate (fx_rates);
 --    NULL for value_suspect and any foreign row missing a rate. fx_converted = 1 for foreign rows, and
 --    fx_rate carries the applied rate on the row (amount * fx_rate = amount_eur), so the original value,
@@ -212,7 +213,7 @@ SELECT
   'c:' || x.id,
   't:' || x.unp,
   x.bidder_key,
-  CASE WHEN x.value_flag = 'annex_suspect' THEN x.signing_value ELSE COALESCE(x.current_value, x.signing_value) END,
+  x.display_native,
   COALESCE(x.currency, 'BGN'),
   x.contract_date,
   x.contract_number,
@@ -255,8 +256,12 @@ SELECT
 FROM (
   SELECT y.*,
     CASE y.value_flag
+      WHEN 'annex_suspect' THEN COALESCE(y.signing_value, y.current_value)
+      ELSE COALESCE(y.current_value, y.signing_value)
+    END AS display_native,
+    CASE y.value_flag
       WHEN 'value_suspect' THEN NULL
-      WHEN 'annex_suspect' THEN y.signing_value
+      WHEN 'annex_suspect' THEN COALESCE(y.signing_value, y.current_value)
       ELSE COALESCE(y.current_value, y.signing_value)
     END AS trusted_native
   FROM (
@@ -285,9 +290,13 @@ FROM (
   ) y
 ) x
 WHERE x.bidder_key IS NOT NULL
-  AND COALESCE(x.current_value, x.signing_value) IS NOT NULL
+  AND x.display_native IS NOT NULL
   AND EXISTS (SELECT 1 FROM tenders te WHERE te.id = 't:' || x.unp)
   AND EXISTS (SELECT 1 FROM bidders  b  WHERE b.id  = x.bidder_key);
+
+-- Reconciliation guard: the final summary reports the contracts inserted alongside the surviving
+-- staging candidates, so a future NOT NULL/foreign-key mismatch is visible instead of hidden by
+-- INSERT OR IGNORE.
 
 -- 6) Location enrichment from OCDS parties (raw_ocds_parties, populated by scripts/load-ocds.mjs).
 --    Match on ЕИК; take the most-recent non-null value (parties repeat across releases). OCDS covers
@@ -305,8 +314,9 @@ UPDATE bidders SET
   address    = COALESCE(address,    (SELECT p.street_address FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized AND p.street_address IS NOT NULL ORDER BY p.id DESC LIMIT 1))
 WHERE EXISTS (SELECT 1 FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized);
 
--- 7) Company master + ownership from the Trade Register (raw_tr_*, scripts/load-tr.mjs). Latest deed
---    per ЕИК wins. Enriches bidders' seat/legal_form and (re)builds company_owners + beneficial_owners.
+-- 7) Company master from the Trade Register (raw_tr_*, scripts/load-tr.mjs). Latest deed per ЕИК
+--    wins. Enriches bidders' seat/legal_form only; owner-table rebuilds are intentionally not done
+--    here while the compliance-remediation worker removes those tables and loaders.
 --    No-op when raw_tr_* is empty (the open feed is daily deltas; coverage grows via the scheduled job).
 UPDATE bidders SET
   legal_form   = COALESCE(legal_form,   (SELECT c.legal_form        FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.legal_form        IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1)),
@@ -315,18 +325,6 @@ UPDATE bidders SET
   municipality = COALESCE(municipality, (SELECT c.municipality      FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.municipality      IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1)),
   address      = COALESCE(address,      (SELECT TRIM(COALESCE(c.street,'') || ' ' || COALESCE(c.street_number,'')) FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.street IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1))
 WHERE EXISTS (SELECT 1 FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized);
-
-DELETE FROM company_owners;
-INSERT OR IGNORE INTO company_owners (company_eik, role, owner_name, owner_eik, indent_type, share_pct, country, source)
-SELECT o.uic, o.role, o.owner_name, MAX(o.owner_uic), MAX(o.indent_type), NULL, MAX(o.country), MIN(o.source)
-FROM raw_tr_owners o WHERE o.owner_name IS NOT NULL
-GROUP BY o.uic, o.role, o.owner_name;
-
-DELETE FROM beneficial_owners;
-INSERT OR IGNORE INTO beneficial_owners (company_eik, owner_name, country, indent_type, source)
-SELECT a.uic, a.owner_name, MAX(a.country), MAX(a.indent_type), MIN(a.source)
-FROM raw_tr_actual_owners a WHERE a.owner_name IS NOT NULL
-GROUP BY a.uic, a.owner_name;
 
 -- 8) Region from NUTS (nuts_regions, seeded by scripts/load-nuts.sql) — labels the OCDS-sourced NUTS
 --    codes and fills authorities.region (област) where empty. No-op if nuts_regions is unseeded.
@@ -354,6 +352,37 @@ SELECT
   (SELECT COUNT(*) FROM bidders WHERE eik_valid = 0)              AS bidders_name_keyed,
   (SELECT COUNT(*) FROM bidders WHERE kind = 'consortium')        AS consortia,
   (SELECT COUNT(*) FROM contracts)                                AS contracts,
+  (SELECT COUNT(*) FROM (
+    SELECT c.id
+    FROM (
+      SELECT c.*,
+        CASE
+          WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
+          WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+          WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
+          ELSE 'ok'
+        END AS value_flag,
+        CASE
+          WHEN TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END) NOT GLOB '*[^0-9]*'
+           AND LENGTH(TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)) IN (9, 13)
+          THEN 'eik:' || TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)
+          WHEN c.contractor_name IS NOT NULL AND TRIM(c.contractor_name) <> '' THEN 'name:' || UPPER(TRIM(REPLACE(REPLACE(c.contractor_name, '  ', ' '), '  ', ' ')))
+          ELSE NULL
+        END AS bidder_key
+      FROM raw_egov_contracts c
+      WHERE c.source LIKE 'admin:%'
+         OR (c.source LIKE 'ocds:%' AND c.contract_number IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM raw_egov_contracts a
+              WHERE a.source LIKE 'admin:%' AND a.contract_number = c.contract_number))
+    ) c
+    WHERE c.bidder_key IS NOT NULL
+      AND CASE c.value_flag
+        WHEN 'annex_suspect' THEN COALESCE(c.signing_value, c.current_value)
+        ELSE COALESCE(c.current_value, c.signing_value)
+      END IS NOT NULL
+      AND EXISTS (SELECT 1 FROM tenders te WHERE te.id = 't:' || c.unp)
+      AND EXISTS (SELECT 1 FROM bidders b WHERE b.id = c.bidder_key)
+  )) AS contract_candidates,
   (SELECT COUNT(*) FROM contracts WHERE value_flag = 'value_suspect') AS value_suspect,
   (SELECT COUNT(*) FROM contracts WHERE value_flag = 'annex_suspect') AS annex_suspect,
   (SELECT COUNT(*) FROM contracts WHERE value_flag = 'review')    AS review,
