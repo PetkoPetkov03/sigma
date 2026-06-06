@@ -45,7 +45,7 @@ deploy script renders a sibling `wrangler.deploy.<ext>` with the real value via
 - **Local deploy:** `cp .env.example .env.local`, fill in `SIGMA_D1_ID`, then
   `set -a; source .env.local; set +a` before `pnpm deploy`.
 - **CI deploy:** add `SIGMA_D1_ID` as a repo secret alongside `CLOUDFLARE_API_TOKEN` /
-  `CLOUDFLARE_ACCOUNT_ID` (and `ETL_REFRESH_SECRET` — see Notes);
+  `CLOUDFLARE_ACCOUNT_ID`;
   [deploy.yml](../.github/workflows/deploy.yml) already wires them through.
 
 > The D1 `database_id` **must be identical** in `web` and `etl` so the explorer reads what the refresh
@@ -95,28 +95,20 @@ pnpm --filter @sigma/etl run deploy   # → the `sigma-etl` worker (registers th
 
 - Open `https://sigma.<subdomain>.workers.dev/` — real totals (190k contracts · ~50.8 bn €).
 - Dashboard → **Workflows** → `sigma-refresh` is listed. Trigger one run to confirm the live
-  `data.egov.bg` round-trip:
-  ```bash
-  # The refresh routes require the shared secret (the worker fails closed without it):
-  curl -X POST -H "Authorization: Bearer $ETL_REFRESH_SECRET" https://sigma-etl.<subdomain>.workers.dev/etl/refresh
-  curl -H "Authorization: Bearer $ETL_REFRESH_SECRET" https://sigma-etl.<subdomain>.workers.dev/etl/refresh/<id>   # poll until "complete"
-  ```
+  `data.egov.bg` round-trip — from the **Cloudflare Dashboard → Workflows → `sigma-refresh`**, or
+  via `wrangler workflows trigger sigma-refresh`. There is no public HTTP trigger; the Worker is
+  cron-only.
 - The cron (`0 */6 * * *`) then refreshes unattended.
 
 ## Notes
 
 - **Runtime secrets.** The explorer needs none (read-only public data; OCDS reads need no key). The
-  **ETL** requires one shared secret, `ETL_REFRESH_SECRET`, gating `POST /etl/refresh` and the status
-  route — the worker **fails closed (401)** without it. Generate it once with a CSPRNG
-  (`openssl rand -hex 32`), store it as the repo secret `ETL_REFRESH_SECRET`, and
-  [deploy.yml](../.github/workflows/deploy.yml) pushes it to the Worker via `wrangler secret put`
-  (encrypted, stored separately from the bundle; the deploy refuses to ship without it). For a
-  **manual** deploy, set it once yourself:
-  `printf '%s' "$ETL_REFRESH_SECRET" | pnpm --filter @sigma/etl exec wrangler secret put ETL_REFRESH_SECRET --config wrangler.deploy.toml`.
-  Callers then authenticate with `Authorization: Bearer <secret>` (or `X-Sigma-ETL-Secret`); rotate by
-  updating the repo secret and re-deploying. The `.dev.vars` secrets remain for the parked
-  `assistant`/`admin` apps — `admin` likewise fails closed without `ADMIN_BASIC_AUTH_PASS` (set
-  `ADMIN_ALLOW_UNAUTH=true` only for local dev).
+  **ETL** has **no runtime secret and no public HTTP surface** — it runs **cron-only**
+  (`0 */6 * * *`) and cannot be triggered over the internet; manual/backfill runs go through the
+  **Cloudflare Dashboard → Workflows** or `wrangler workflows trigger sigma-refresh`
+  (credential-gated). The `.dev.vars` secrets remain for the parked `assistant`/`admin` apps —
+  `admin` likewise fails closed without `ADMIN_BASIC_AUTH_PASS` (set `ADMIN_ALLOW_UNAUTH=true` only
+  for local dev).
 - **Access scoping.** Cloudflare API tokens scope by permission + account, **not down to one Worker
   script** (`Workers Scripts: Edit` is account-wide). For true "only-Sigma" isolation, put the Sigma
   workers in their own Cloudflare account and scope the token to it. Otherwise use the minimal scopes
