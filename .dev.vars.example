@@ -14,6 +14,10 @@ NAP_API_TOKEN=
 TARGOVSKI_REGISTAR_API_TOKEN=
 AOP_API_TOKEN=
 
+# Public EOP open-data MinIO feed
+# EOP_OPEN_DATA_BASE_URL=https://storage.eop.bg
+EOP_OPEN_DATA_BASE_URL=
+
 # Admin ops UI (apps/admin) basic auth
 ADMIN_BASIC_AUTH_USER=admin
 ADMIN_BASIC_AUTH_PASS=

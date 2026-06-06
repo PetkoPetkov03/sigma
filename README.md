@@ -54,6 +54,10 @@ The analysis/monitoring module (risk scoring 0–100, спец-checker AI, це�
 | `pnpm bootstrap:apply` | Actually create the resources                                   |
 | `pnpm deploy`          | Run by CI on push to `main`; idempotent migrate + seed + deploy |
 
+## ETL
+
+The historical ЦАИС ЕОП base is loaded from the public EOP MinIO open-data feed by `scripts/load-eop.mjs`; `scripts/import.mjs` applies the local D1 migrations, loads the feed, and rebuilds derived tables. The feed base defaults to `https://storage.eop.bg` and can be overridden with `EOP_OPEN_DATA_BASE_URL`.
+
 ## Operational security
 
 Production deploys originate only from GitHub Actions; the dev machine never holds a long-lived production credential. Procurement data is public by design, but integrations with national registries (НАП, Търговски регистър) carry access constraints — treat any credentials for those as production secrets.

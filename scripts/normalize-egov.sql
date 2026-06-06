@@ -188,7 +188,7 @@ FROM (
     SELECT
       contractor_name,
       TRIM(CASE WHEN contractor_eik LIKE 'ЕИК %' THEN SUBSTR(contractor_eik, 5) ELSE contractor_eik END) AS eik_clean
-    FROM raw_egov_contracts WHERE source LIKE 'admin:%' OR source LIKE 'ocds:%'
+    FROM raw_egov_contracts WHERE source LIKE 'admin:%' OR source LIKE 'eop:%' OR source LIKE 'ocds:%'
   )
 )
 WHERE bidder_key IS NOT NULL
@@ -295,10 +295,10 @@ FROM (
     -- admin always; an OCDS row only when no admin row shares its contract_number — admin wins.
     -- Key is contract_number (the АОП contract document number, common to both feeds), NOT unp:
     -- OCDS stores its ocid ('ocds-…') in unp, which never matches the admin УНП format. (idx_egov_cnum)
-    WHERE c.source LIKE 'admin:%'
+    WHERE c.source LIKE 'eop:%'
        OR (c.source LIKE 'ocds:%' AND c.contract_number IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM raw_egov_contracts a
-            WHERE a.source LIKE 'admin:%' AND a.contract_number = c.contract_number))
+            WHERE a.source LIKE 'eop:%' AND a.contract_number = c.contract_number))
   ) y
 ) x
 WHERE x.bidder_key IS NOT NULL
@@ -348,7 +348,7 @@ WHERE authorities.nuts IS NOT NULL AND authorities.region IS NULL;
 DELETE FROM data_freshness;
 INSERT INTO data_freshness (source, as_of, rows, refreshed_at)
 SELECT
-  CASE WHEN source LIKE 'admin:%' THEN 'admin' WHEN source LIKE 'ocds:%' THEN 'ocds' ELSE 'other' END AS src,
+  CASE WHEN source LIKE 'eop:%' THEN 'eop' WHEN source LIKE 'admin:%' THEN 'admin' WHEN source LIKE 'ocds:%' THEN 'ocds' ELSE 'other' END AS src,
   MAX(CASE WHEN contract_date <= date('now') THEN contract_date END),
   COUNT(*),
   datetime('now')
@@ -382,10 +382,10 @@ SELECT
           ELSE NULL
         END AS bidder_key
       FROM raw_egov_contracts c
-      WHERE c.source LIKE 'admin:%'
+      WHERE c.source LIKE 'eop:%'
          OR (c.source LIKE 'ocds:%' AND c.contract_number IS NOT NULL AND NOT EXISTS (
               SELECT 1 FROM raw_egov_contracts a
-              WHERE a.source LIKE 'admin:%' AND a.contract_number = c.contract_number))
+              WHERE a.source LIKE 'eop:%' AND a.contract_number = c.contract_number))
     ) c
     WHERE c.bidder_key IS NOT NULL
       AND CASE c.value_flag
