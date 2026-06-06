@@ -76,9 +76,14 @@ export function SiteHeader() {
     <>
       <header className="site-header" role="banner">
         <div className="site-header-inner">
-          <Link className="brand" to="/" aria-label="Сигма — начална страница">
-            <span className="brand-mark">Сигма</span>
-            <span className="brand-sub">Платформа за прозрачни възлагания</span>
+          <Link
+            className="brand"
+            to="/"
+            aria-label="СИГМА — начална страница"
+            title="Система за интегриран граждански мониторинг и анализ на обществените поръчки"
+          >
+            <img className="brand-logo" src="/logo.png" width={646} height={112} alt="СИГМА" />
+            <span className="brand-sub">Платформа за прозрачност на обществените поръчки</span>
           </Link>
           <nav
             className={`site-nav${navOpen ? ' is-open' : ''}`}

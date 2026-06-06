@@ -21,7 +21,13 @@ import { PageHeader } from './components/PageHeader';
 import './app.css';
 
 // The editorial design uses a system serif/mono/sans stack (see app.css @theme) — no webfont request.
-export const links: Route.LinksFunction = () => [];
+// Brand favicons (white „С“ on the deep-red tile) live in /public; declare them so the head is explicit.
+export const links: Route.LinksFunction = () => [
+  { rel: 'icon', href: '/favicon.ico', sizes: '48x48' },
+  { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png' },
+  { rel: 'icon', type: 'image/png', sizes: '16x16', href: '/favicon-16.png' },
+  { rel: 'apple-touch-icon', sizes: '180x180', href: '/apple-touch-icon.png' },
+];
 
 // One cheap read for the chrome: the data current-as-of date shown in the footer on every page.
 export async function loader({ context, request }: Route.LoaderArgs) {
@@ -118,7 +124,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   );
 }
 
-// Errors render inside the chrome so a 404/500 still looks like Сигма and keeps the nav.
+// Errors render inside the chrome so a 404/500 still looks like СИГМА and keeps the nav.
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   const is404 = isRouteErrorResponse(error) && error.status === 404;
   const kicker = is404 ? 'Грешка 404' : 'Грешка';
@@ -131,7 +137,7 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   return (
     <>
       {/* The boundary bypasses route `meta`, so set the document title here (React hoists it). */}
-      <title>{is404 ? 'Страницата не е намерена — Сигма' : 'Грешка — Сигма'}</title>
+      <title>{is404 ? 'Страницата не е намерена — СИГМА' : 'Грешка — СИГМА'}</title>
       <a className="skip" href="#main">
         Към съдържанието
       </a>

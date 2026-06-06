@@ -236,7 +236,7 @@ code,
   text-decoration: none;
   color: var(--ink);
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s-3);
   min-width: 0;
 }
@@ -247,13 +247,11 @@ code,
 .brand:visited {
   color: var(--ink);
 }
-.brand-mark {
-  font-family: var(--font-serif);
-  font-size: 22px;
-  letter-spacing: 0.01em;
-  color: var(--ink);
-  font-weight: 400;
-  white-space: nowrap;
+.brand-logo {
+  display: block;
+  height: 28px;
+  width: auto;
+  /* Source wordmark is the deep brand red on transparent — sits on the warm paper masthead. */
 }
 /* The pre-existing brand-sub tagline competes with the editorial mast tone */
 .brand-sub {
