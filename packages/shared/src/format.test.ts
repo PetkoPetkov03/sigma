@@ -5,6 +5,7 @@ import {
   count,
   date,
   entityName,
+  isNaturalPersonProfileName,
   longDate,
   money,
   monthYear,
@@ -148,5 +149,15 @@ describe('parseConsortiumMembers', () => {
   it('dedupes repeated members', () => {
     const parsed = parseConsortiumMembers('A; A; B');
     expect(parsed).toEqual({ kind: 'list', members: ['A', 'B'] });
+  });
+});
+
+describe('isNaturalPersonProfileName', () => {
+  it('detects sole-trader names that embed a natural person', () => {
+    expect(isNaturalPersonProfileName('ЕТ ДРИФТ - НИКОЛАЙ КИРОВ')).toBe(true);
+  });
+
+  it('does not flag ordinary company names', () => {
+    expect(isNaturalPersonProfileName('СОФАРМА ТРЕЙДИНГ АД')).toBe(false);
   });
 });

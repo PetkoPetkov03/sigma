@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clamp, riskBand, round2 } from './index';
+import { clamp, isNaturalPersonProfileName, riskBand, round2 } from './index';
 
 describe('shared utils', () => {
   it('clamps within range', () => {
@@ -20,5 +20,9 @@ describe('shared utils', () => {
     expect(riskBand(30)).toBe('medium');
     expect(riskBand(60)).toBe('high');
     expect(riskBand(90)).toBe('critical');
+  });
+
+  it('exports the natural-person profile guard used by noindex checks', () => {
+    expect(isNaturalPersonProfileName('  ет Example  ')).toBe(true);
   });
 });

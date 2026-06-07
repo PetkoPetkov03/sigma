@@ -163,6 +163,11 @@ export function parseConsortiumMembers(name: string): ConsortiumMembership | nul
   return { kind: 'list', members: unique };
 }
 
+export function isNaturalPersonProfileName(name: string): boolean {
+  const normalized = name.trim().toUpperCase();
+  return normalized.startsWith('ЕТ ') || normalized.startsWith('ET ');
+}
+
 /**
  * Display name for a winning entity. A consortium row holds a `;`-joined member list → show the
  * first member + „и др." (the **Обединение** badge is rendered separately by the caller). Companies

@@ -2,6 +2,7 @@
 // A sitemap index points at per-type sitemaps; contracts paginate under the 50k-URL limit. URLs use
 // the same slugs as the routes (companySlug encodes name-keyed bidders).
 
+import { isNaturalPersonProfileName } from '@sigma/shared';
 import { companySlug } from './identity';
 
 const HEAD =
@@ -23,7 +24,9 @@ function lastmod(iso: string | null | undefined): string {
 
 // Dataset freshness date (latest real contract date), used as the per-URL <lastmod> fallback.
 async function datasetAsOf(db: D1Database): Promise<string | null> {
-  const row = await db.prepare(`SELECT as_of FROM home_totals WHERE id = 1`).first<{ as_of: string | null }>();
+  const row = await db
+    .prepare(`SELECT as_of FROM home_totals WHERE id = 1`)
+    .first<{ as_of: string | null }>();
   return row?.as_of ?? null;
 }
 
@@ -40,7 +43,14 @@ function streamUrls(
     },
     async pull(controller) {
       if (done) return;
-      const { slugs, next } = await fetchChunk(after);
+      let slugs: string[] = [];
+      let next: string | null = null;
+      do {
+        const chunk = await fetchChunk(after);
+        slugs = chunk.slugs;
+        next = chunk.next;
+        after = next ?? after;
+      } while (slugs.length === 0 && next !== null);
       if (slugs.length === 0 || next === null) {
         if (slugs.length) controller.enqueue(enc.encode(slugs.join('')));
         controller.enqueue(enc.encode(TAIL));
@@ -49,7 +59,6 @@ function streamUrls(
         return;
       }
       controller.enqueue(enc.encode(slugs.join('')));
-      after = next;
     },
   });
   return new Response(stream, {
@@ -86,15 +95,17 @@ export function streamCompanySitemap(db: D1Database, origin: string): Response {
   return streamUrls(origin, async (after) => {
     const { results } = await db
       .prepare(
-        `SELECT bidder_id, last_date FROM company_totals WHERE bidder_id > ? ORDER BY bidder_id LIMIT ?`,
+        `SELECT bidder_id, name, last_date FROM company_totals WHERE bidder_id > ? ORDER BY bidder_id LIMIT ?`,
       )
       .bind(after, CHUNK)
-      .all<{ bidder_id: string; last_date: string | null }>();
+      .all<{ bidder_id: string; name: string; last_date: string | null }>();
     const fallback = await asOf;
-    const slugs = results.map(
-      (r) =>
-        `<url><loc>${xmlEscape(origin)}/companies/${xmlEscape(companySlug(r.bidder_id))}</loc>${lastmod(r.last_date ?? fallback)}</url>\n`,
-    );
+    const slugs = results
+      .filter((r) => !isNaturalPersonProfileName(r.name))
+      .map(
+        (r) =>
+          `<url><loc>${xmlEscape(origin)}/companies/${xmlEscape(companySlug(r.bidder_id))}</loc>${lastmod(r.last_date ?? fallback)}</url>\n`,
+      );
     const last = results[results.length - 1];
     return { slugs, next: results.length < CHUNK || !last ? null : last.bidder_id };
   });
