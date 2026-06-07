@@ -13,7 +13,7 @@ describe('risk weights', () => {
   it('sum to exactly one scoring budget', () => {
     const total = Object.values(DEFAULT_RISK_WEIGHTS).reduce((sum, weight) => sum + weight, 0);
 
-    expect(total).toBeCloseTo(1, 10);
+    expect(total).toBe(1);
   });
 });
 

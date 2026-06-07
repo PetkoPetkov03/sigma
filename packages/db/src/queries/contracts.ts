@@ -1,9 +1,9 @@
 // Contracts — the atomic record. The list reads the base `contracts` table (filtered/sorted, keyset
-// page of 15); facet counts come from the precomputed facet_counts/sector_totals; CSV is streamed.
+// page of 15); facet counts are grouped or read from facet_counts; CSV is streamed.
 
 import type { ContractListItem, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS, PROCEDURE_GROUPS, procedureGroup } from '@sigma/config';
-import { entityName } from '@sigma/shared';
+import { cleanName, entityName } from '@sigma/shared';
 import { csvCell } from './csv';
 import { authoritySlug, bidderIdFromSlug, companySlug, contractSlug } from './identity';
 import { keyset, pageCursors } from './keyset';
@@ -139,6 +139,8 @@ function buildFilters(p: ContractListParams): { sql: string; params: unknown[] }
 }
 
 function toItem(r: ContractRow): ContractListItem {
+  const authorityName = cleanName(r.authority_name);
+  const bidderName = cleanName(r.bidder_name);
   return {
     id: contractSlug(r.id),
     subject: r.subject,
@@ -147,10 +149,10 @@ function toItem(r: ContractRow): ContractListItem {
     euFunded: r.eu_funded === 1,
     isConsortium: r.bidder_kind === 'consortium',
     authoritySlug: authoritySlug(r.authority_id),
-    authorityName: r.authority_name,
+    authorityName,
     bidderSlug: companySlug(r.bidder_id),
-    bidderName: r.bidder_name,
-    bidderDisplayName: entityName(r.bidder_name, r.bidder_kind),
+    bidderName,
+    bidderDisplayName: entityName(bidderName, r.bidder_kind),
     bidderKind: r.bidder_kind,
     procedureLabel: procedureGroup(r.procedure_type).label,
     signedAt: r.signed_at,
@@ -237,7 +239,7 @@ export interface ContractFacets {
 }
 
 /**
- * Rail facets for the contracts list. Procedure/sector/EU come from precomputed counts (no scans).
+ * Rail facets for the contracts list. Procedure/EU come from precomputed counts (no scans).
  * The year facet is computed live from `contracts` so its buckets reconcile with the contracts total:
  * the precomputed `facet_counts` year rows are clamped to a fixed date window and drop outlier years
  * (2016/2019/2029) plus null/malformed dates, which silently hid ~36 rows. This grouped scan rides the
@@ -248,7 +250,11 @@ export async function getContractFacets(db: D1Database): Promise<ContractFacets>
     .prepare(`SELECT facet, key, contracts FROM facet_counts`)
     .all<{ facet: string; key: string; contracts: number }>();
   const sectorRows = await db
-    .prepare(`SELECT division, contracts FROM sector_totals`)
+    .prepare(
+      `SELECT substr(t.cpv_code, 1, 2) AS division, COUNT(*) AS contracts
+       FROM contracts c JOIN tenders t ON t.id = c.tender_id
+       GROUP BY division`,
+    )
     .all<{ division: string; contracts: number }>();
   const yearRows = await db
     .prepare(
@@ -355,9 +361,9 @@ export function streamContractsCsv(db: D1Database, p: ContractListParams): Respo
             contractSlug(r.id),
             r.unp,
             r.subject,
-            r.authority_name,
+            cleanName(r.authority_name),
             r.authority_eik,
-            entityName(r.bidder_name, r.bidder_kind),
+            entityName(cleanName(r.bidder_name), r.bidder_kind),
             r.contractor_eik,
             r.bidder_kind,
             r.cpv_code ? r.cpv_code.slice(0, 2) : '',

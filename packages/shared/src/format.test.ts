@@ -60,6 +60,8 @@ describe('count / pct', () => {
   it('formats ratios as percentages, dropping a trailing ,0', () => {
     expect(pct(0.453)).toBe('45,3%');
     expect(pct(0.78)).toBe('78%');
+    expect(pct(-0.233)).toBe('−23,3%');
+    expect(pct(-0.0001)).toBe('0%');
     expect(signedPct(0)).toBe('0%');
     expect(signedPct(0.0001)).toBe('0%');
     expect(signedPct(-0.0001)).toBe('0%');

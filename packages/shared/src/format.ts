@@ -68,7 +68,9 @@ export function count(n: number | null | undefined): string {
 /** A ratio (0–1) as a percentage: `0.453` → `45,3%`. Default 1 dp, trailing „,0" dropped (`0.78` → `78%`). */
 export function pct(ratio: number | null | undefined, dp = 1): string {
   if (ratio == null || !Number.isFinite(ratio)) return EM_DASH;
-  return `${dec(ratio * 100, dp, true)}%`;
+  const roundedMagnitude = rounded(Math.abs(ratio) * 100, dp);
+  const body = `${dec(Math.abs(ratio) * 100, dp, true)}%`;
+  return ratio < 0 && roundedMagnitude !== 0 ? `${MINUS}${body}` : body;
 }
 
 /** Signed percentage delta with an explicit sign: `-0.233` → `−23,3%`, `0.05` → `+5%`. */

@@ -382,7 +382,7 @@ export const DEFAULT_RISK_WEIGHTS: RiskWeights = {
   price: 0.25,
   competition: 0.2,
   cartel: 0.2,
-  process: 0.1,
+  process: 1 - (0.25 + 0.25 + 0.2 + 0.2),
 };
 
 export const RISK_BAND_LABELS: Record<RiskBand, string> = {

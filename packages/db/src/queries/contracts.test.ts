@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { listContracts } from './contracts';
+import { getContractFacets, listContracts } from './contracts';
 
 const contractRow = {
   id: 'c:1',
@@ -44,5 +44,30 @@ describe('listContracts', () => {
 
     expect(page.items).toEqual([]);
     expect(page.total).toBe(0);
+  });
+});
+
+describe('getContractFacets', () => {
+  it('counts sectors from the same CPV division expression used by list filters', async () => {
+    const seenSql: string[] = [];
+    const db = {
+      prepare(sql: string) {
+        seenSql.push(sql);
+        return {
+          async all<T>() {
+            if (sql.includes('facet_counts')) return { results: [] as T[] };
+            if (sql.includes('substr(t.cpv_code, 1, 2)')) {
+              return { results: [{ division: '45', contracts: 7 }] as T[] };
+            }
+            return { results: [] as T[] };
+          },
+        };
+      },
+    } as D1Database;
+
+    const facets = await getContractFacets(db);
+
+    expect(seenSql.some((sql) => sql.includes('JOIN tenders t ON t.id = c.tender_id'))).toBe(true);
+    expect(facets.sectors.find((sector) => sector.value === '45')?.count).toBe(7);
   });
 });

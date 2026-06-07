@@ -12,7 +12,7 @@ import type {
   SectorRef,
 } from '@sigma/api-contract';
 import { CPV_SECTORS } from '@sigma/config';
-import { entityName, money } from '@sigma/shared';
+import { cleanName, entityName, money } from '@sigma/shared';
 import { authoritySlug, companySlug } from './identity';
 
 export interface FlowsParams {
@@ -91,10 +91,12 @@ function buildSankey(pairs: PairRow[]): SankeyLayout {
     { name: string; kind: 'company' | 'consortium'; value: number }
   >();
   for (const p of pairs) {
-    const a = authAgg.get(p.authority_id) ?? { name: p.authority_name, value: 0 };
+    const authorityName = cleanName(p.authority_name);
+    const bidderName = cleanName(p.bidder_name);
+    const a = authAgg.get(p.authority_id) ?? { name: authorityName, value: 0 };
     a.value += p.won_eur;
     authAgg.set(p.authority_id, a);
-    const c = compAgg.get(p.bidder_id) ?? { name: p.bidder_name, kind: p.bidder_kind, value: 0 };
+    const c = compAgg.get(p.bidder_id) ?? { name: bidderName, kind: p.bidder_kind, value: 0 };
     c.value += p.won_eur;
     compAgg.set(p.bidder_id, c);
   }
@@ -153,6 +155,8 @@ function buildSankey(pairs: PairRow[]): SankeyLayout {
       cPos.get(p.bidder_id)!.index - cPos.get(q.bidder_id)!.index,
   );
   const ribbons: SankeyRibbon[] = ordered.map((p) => {
+    const authorityName = cleanName(p.authority_name);
+    const bidderDisplayName = entityName(cleanName(p.bidder_name), p.bidder_kind);
     const a = aPos.get(p.authority_id)!;
     const c = cPos.get(p.bidder_id)!;
     const a0 = a.off;
@@ -164,9 +168,9 @@ function buildSankey(pairs: PairRow[]): SankeyLayout {
     const ax = A_X + BAR_W;
     return {
       d: `M${ax},${a0.toFixed(1)} C${MID_X},${a0.toFixed(1)} ${MID_X},${c0.toFixed(1)} ${C_X},${c0.toFixed(1)} L${C_X},${c1.toFixed(1)} C${MID_X},${c1.toFixed(1)} ${MID_X},${a1.toFixed(1)} ${ax},${a1.toFixed(1)} Z`,
-      title: `${p.authority_name} → ${entityName(p.bidder_name, p.bidder_kind)}: ${money(p.won_eur)} · ${p.contracts} договора`,
-      fromName: p.authority_name,
-      toName: entityName(p.bidder_name, p.bidder_kind),
+      title: `${authorityName} → ${bidderDisplayName}: ${money(p.won_eur)} · ${p.contracts} договора`,
+      fromName: authorityName,
+      toName: bidderDisplayName,
       valueEur: p.won_eur,
       contracts: p.contracts,
     };
@@ -180,17 +184,21 @@ const SECTOR_OPTION_LIMIT = 12;
 export async function getFlows(db: D1Database, p: FlowsParams): Promise<FlowsData> {
   const top = p.top === 50 ? 50 : 20;
   const rows = await topPairs(db, p, top);
-  const pairs: FlowPair[] = rows.map((r, i) => ({
-    rank: i + 1,
-    authoritySlug: authoritySlug(r.authority_id),
-    authorityName: r.authority_name,
-    bidderSlug: companySlug(r.bidder_id),
-    bidderName: r.bidder_name,
-    bidderDisplayName: entityName(r.bidder_name, r.bidder_kind),
-    bidderKind: r.bidder_kind,
-    wonEur: r.won_eur,
-    contracts: r.contracts,
-  }));
+  const pairs: FlowPair[] = rows.map((r, i) => {
+    const authorityName = cleanName(r.authority_name);
+    const bidderName = cleanName(r.bidder_name);
+    return {
+      rank: i + 1,
+      authoritySlug: authoritySlug(r.authority_id),
+      authorityName,
+      bidderSlug: companySlug(r.bidder_id),
+      bidderName,
+      bidderDisplayName: entityName(bidderName, r.bidder_kind),
+      bidderKind: r.bidder_kind,
+      wonEur: r.won_eur,
+      contracts: r.contracts,
+    };
+  });
 
   // Sector select options: present sectors by value (curated first), capped.
   const sectorRows = await db
