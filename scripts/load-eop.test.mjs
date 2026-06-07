@@ -1,10 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 
 import { deleteSqlForEopSources } from './load-eop.mjs';
 
 describe('deleteSqlForEopSources', () => {
   it('keeps the existing single-day source wipe', () => {
-    expect(deleteSqlForEopSources('raw_egov_contracts', 'contracts', ['2024-01-02'])).toBe(
+    assert.equal(
+      deleteSqlForEopSources('raw_egov_contracts', 'contracts', ['2024-01-02']),
       "DELETE FROM raw_egov_contracts WHERE source = 'eop:contracts:2024-01-02';\n",
     );
   });
@@ -15,9 +17,10 @@ describe('deleteSqlForEopSources', () => {
       '2024-01-03',
     ]);
 
-    expect(sql).toBe(
+    assert.equal(
+      sql,
       "DELETE FROM raw_egov_contracts WHERE source IN (\n  'eop:contracts:2024-01-02',\n  'eop:contracts:2024-01-03'\n);\n",
     );
-    expect(sql).not.toContain("source LIKE 'eop:contracts:%'");
+    assert.equal(sql.includes("source LIKE 'eop:contracts:%'"), false);
   });
 });

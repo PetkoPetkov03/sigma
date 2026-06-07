@@ -7,7 +7,7 @@
 //   node scripts/load-eop.mjs --cat=contracts --concurrency=4
 //
 //   flags: --from=YYYY-MM-DD --to=YYYY-MM-DD, --cat=contracts|tenders|annexes,
-//          --concurrency=N, --apply, --remote
+//          --concurrency=N, --apply, --remote, --no-ocds, --ocds-only
 //
 // Format notes: records are flat objects with English camelCase keys. Object files are
 // small enough to fetch and JSON.parse whole. Wipes are scoped to the requested source days.
@@ -18,6 +18,19 @@ import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  AMENDMENT_STAGING_COLS,
+  AWARD_SUPPLIER_STAGING_COLS,
+  CONTRACT_STAGING_COLS,
+  LOT_STAGING_COLS,
+  PARTY_STAGING_COLS,
+  classifyBucketKey,
+  releaseToAmendments,
+  releaseToAwardSuppliers,
+  releaseToContracts,
+  releaseToLots,
+  releaseToParties,
+} from '../packages/ingest/src/ocds.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const apiDir = resolve(root, 'apps/api');
@@ -25,11 +38,14 @@ const MAX_BATCH_BYTES = 90_000;
 const MAX_BATCH_ROWS = 500;
 const MAX_FILE_BYTES = 256 * 1024 * 1024; // keep each SQL chunk under Node's ~512MB string cap (wrangler reads the whole file into one string)
 const DEFAULT_FROM = '2020-01-01';
-const DEFAULT_TO = '2025-12-31';
+const DEFAULT_TO = new Date().toISOString().slice(0, 10);
 const DEFAULT_CONCURRENCY = 4;
 const FETCH_ATTEMPTS = 6;
 const FETCH_TIMEOUT_MS = 60_000;
-const BASE_URL = (process.env.EOP_OPEN_DATA_BASE_URL || 'https://storage.eop.bg').replace(/\/+$/, '');
+const BASE_URL = (process.env.EOP_OPEN_DATA_BASE_URL || 'https://storage.eop.bg').replace(
+  /\/+$/,
+  '',
+);
 const CATEGORIES = ['contracts', 'tenders', 'annexes'];
 const RESOURCE_WORDS = {
   contracts: 'договори',
@@ -100,7 +116,35 @@ function coerce(kind, v) {
 }
 function lit(kind, value) {
   if (value === null) return 'NULL';
-  if (['int', 'real', 'bool', 'secured_inverse', 'variants_enum'].includes(kind)) return String(value);
+  if (['int', 'real', 'bool', 'secured_inverse', 'variants_enum'].includes(kind))
+    return String(value);
+  return `'${String(value)
+    .replace(/[\x00-\x1F]/g, '')
+    .replace(/'/g, "''")}'`;
+}
+
+const SQL_REAL_COLS = new Set([
+  'signing_value',
+  'estimated_value',
+  'current_value',
+  'value_before',
+  'value_after',
+  'value_delta',
+  'value_amount',
+]);
+const SQL_INT_COLS = new Set([
+  'dataset_year',
+  'eu_funded',
+  'bids_received',
+  'needs_enrichment',
+  'supplier_count',
+]);
+function sqlLiteral(col, value) {
+  if (value === null || value === undefined) return 'NULL';
+  if (SQL_REAL_COLS.has(col) || SQL_INT_COLS.has(col)) {
+    const n = Number(value);
+    return Number.isFinite(n) ? String(n) : 'NULL';
+  }
   return `'${String(value)
     .replace(/[\x00-\x1F]/g, '')
     .replace(/'/g, "''")}'`;
@@ -111,7 +155,13 @@ const CATS = {
   contracts: {
     table: 'raw_egov_contracts',
     fixed: ['source', 'dataset_year', 'dataset_variant', 'fetched_at', 'needs_enrichment'],
-    fixedVals: (day) => [`'eop:contracts:${day}'`, String(yearOf(day)), `'eop'`, `'${fetchedAt}'`, '0'],
+    fixedVals: (day) => [
+      `'eop:contracts:${day}'`,
+      String(yearOf(day)),
+      `'eop'`,
+      `'${fetchedAt}'`,
+      '0',
+    ],
     keep: (record) => clean(record.contractNumber) !== null,
     fields: [
       ['seq_no', null, 'text'],
@@ -423,9 +473,17 @@ async function readBucketKeysFor(day) {
       handleHttp(res, url);
       const keys = parseBucketKeys(await res.text());
       const byCat = {};
-      for (const cat of CATEGORIES) {
-        const key = keyForCat(keys, cat);
-        if (key) byCat[cat] = key;
+      const counts = {};
+      for (const key of keys) {
+        const kind = classifyBucketKey(key);
+        if (!kind) continue;
+        counts[kind] = (counts[kind] || 0) + 1;
+        if (!byCat[kind]) byCat[kind] = key;
+      }
+      for (const [kind, count] of Object.entries(counts)) {
+        if (count > 1)
+          process.stderr.write(`!! ${day} ${kind}: multiple keys matched; using first
+`);
       }
       return byCat;
     });
@@ -453,7 +511,7 @@ async function fetchObjectJson(cat, day, key) {
   const url = `${bucketUrl}${encodeURIComponent(key)}`;
   return retryOperation(`${cat} ${day} object`, async (signal) => {
     const res = await fetch(url, { signal });
-    handleHttp(res, url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} ${url}`);
     const text = await res.text();
     const json = JSON.parse(text);
     if (!Array.isArray(json)) throw new Error(`${cat} ${day}: object JSON is not an array`);
@@ -465,50 +523,104 @@ function parseCachedJson(cat, day, text) {
   if (!Array.isArray(json)) throw new Error(`${cat} ${day}: object JSON is not an array`);
   return json;
 }
-async function recordsForDay(cat, day, failures, opts = {}) {
+
+async function fetchAnyObjectJson(cat, day, key) {
+  const bucketUrl = `${BASE_URL}/open-data-${day}/`;
+  const url = `${bucketUrl}${encodeURIComponent(key)}`;
+  return retryOperation(`${cat} ${day} object`, async (signal) => {
+    const res = await fetch(url, { signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText} ${url}`);
+    const text = await res.text();
+    return { text, json: JSON.parse(text) };
+  });
+}
+function parseCachedAnyJson(cat, day, text) {
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${cat} ${day}: invalid JSON: ${errText(err)}`);
+  }
+}
+async function recordsForDay(cat, day, failures, skips) {
   try {
     const keys = await bucketKeysFor(day);
     if (keys === null) {
-      if (opts.failMissing) {
-        const message = 'bucket not published or unavailable';
-        process.stderr.write(`!! ${cat} ${day}: ${message} — refusing apply\n`);
-        failures.push({ day, cat, error: message });
-        return { records: [], failed: true };
-      }
-      return { records: [], failed: false };
+      const message = 'bucket not published or unavailable';
+      skips.push({ day, cat, reason: message });
+      return { records: [], loaded: false, skipped: true };
     }
     const key = keys[cat];
     if (!key) {
-      process.stderr.write(`!! ${cat} ${day}: object key missing — skipping\n`);
-      if (opts.failMissing) {
-        failures.push({ day, cat, error: 'object key missing' });
-        return { records: [], failed: true };
-      }
-      return { records: [], failed: false };
+      const message = 'object key missing';
+      process.stderr.write(`-- ${cat} ${day}: ${message}; skipping\n`);
+      skips.push({ day, cat, reason: message });
+      return { records: [], loaded: false, skipped: true };
     }
 
     const jsonPath = cachePath(day, RESOURCE_FILES[cat]);
     if (await pathExists(jsonPath)) {
       process.stderr.write(`==> ${cat} ${day}: cache HIT ${jsonPath}\n`);
-      return { records: parseCachedJson(cat, day, await readFile(jsonPath, 'utf8')), failed: false };
+      return {
+        records: parseCachedJson(cat, day, await readFile(jsonPath, 'utf8')),
+        loaded: true,
+        skipped: false,
+      };
     }
 
     process.stderr.write(`==> ${cat} ${day}: fetching ${key}\n`);
     const { text, json } = await fetchObjectJson(cat, day, key);
     await atomicWrite(jsonPath, text);
-    return { records: json, failed: false };
+    return { records: json, loaded: true, skipped: false };
   } catch (err) {
     const message = errText(err);
     process.stderr.write(`!! ${cat} ${day}: FETCH FAILED after retries: ${message} — continuing\n`);
     failures.push({ day, cat, error: message });
-    return { records: [], failed: true };
+    return { records: [], loaded: false, skipped: false, failed: true };
   }
 }
 
-async function preflightCategory(cat, days, concurrency, failures) {
-  for (let i = 0; i < days.length; i += concurrency) {
-    const slice = days.slice(i, i + concurrency);
-    await Promise.all(slice.map((day) => recordsForDay(cat, day, failures, { failMissing: true })));
+async function ocdsPackageForDay(day, failures, skips) {
+  const cat = 'ocds';
+  try {
+    const keys = await bucketKeysFor(day);
+    if (keys === null) {
+      const message = 'bucket not published or unavailable';
+      skips.push({ day, cat, reason: message });
+      return { pkg: null, loaded: false, skipped: true };
+    }
+    const key = keys.ocds;
+    if (!key) {
+      const message = 'object key missing';
+      process.stderr.write(`-- ${cat} ${day}: ${message}; skipping\n`);
+      skips.push({ day, cat, reason: message });
+      return { pkg: null, loaded: false, skipped: true };
+    }
+
+    const jsonPath = cachePath(day, 'ocds.json');
+    if (await pathExists(jsonPath)) {
+      process.stderr.write(`==> ${cat} ${day}: cache HIT ${jsonPath}\n`);
+      return {
+        pkg: parseCachedAnyJson(cat, day, await readFile(jsonPath, 'utf8')),
+        resourceUri: `${BASE_URL}/open-data-${day}/${encodeURIComponent(key)}`,
+        loaded: true,
+        skipped: false,
+      };
+    }
+
+    process.stderr.write(`==> ${cat} ${day}: fetching ${key}\n`);
+    const { text, json } = await fetchAnyObjectJson(cat, day, key);
+    await atomicWrite(jsonPath, text);
+    return {
+      pkg: json,
+      resourceUri: `${BASE_URL}/open-data-${day}/${encodeURIComponent(key)}`,
+      loaded: true,
+      skipped: false,
+    };
+  } catch (err) {
+    const message = errText(err);
+    process.stderr.write(`!! ${cat} ${day}: FETCH FAILED after retries: ${message} — continuing\n`);
+    failures.push({ day, cat, error: message });
+    return { pkg: null, loaded: false, skipped: false, failed: true };
   }
 }
 
@@ -516,6 +628,179 @@ export function deleteSqlForEopSources(table, cat, days) {
   if (days.length === 1) return `DELETE FROM ${table} WHERE source = 'eop:${cat}:${days[0]}';\n`;
   const sources = days.map((day) => `'eop:${cat}:${day}'`).join(',\n  ');
   return `DELETE FROM ${table} WHERE source IN (\n  ${sources}\n);\n`;
+}
+
+function deleteSqlForSources(table, sources) {
+  if (sources.length === 1) return `DELETE FROM ${table} WHERE source = '${sources[0]}';\n`;
+  return `DELETE FROM ${table} WHERE source IN (
+  ${sources.map((source) => `'${source}'`).join(',\n  ')}
+);\n`;
+}
+
+function makeSqlBatcher(out, header) {
+  const headerBytes = Buffer.byteLength(header, 'utf8') + 2;
+  let batch = [];
+  let stmtBytes = headerBytes;
+  let max = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    const stmt = header + batch.join(',\n') + ';\n';
+    max = Math.max(max, Buffer.byteLength(stmt, 'utf8'));
+    await writeChunk(out, stmt);
+    batch = [];
+    stmtBytes = headerBytes;
+  };
+  const push = async (tuple) => {
+    const tb = Buffer.byteLength(tuple, 'utf8') + 2;
+    if (batch.length > 0 && (batch.length >= MAX_BATCH_ROWS || stmtBytes + tb > MAX_BATCH_BYTES))
+      await flush();
+    batch.push(tuple);
+    stmtBytes += tb;
+  };
+  return { push, flush, max: () => max };
+}
+
+function packageReleases(pkg) {
+  if (!pkg) return [];
+  if (Array.isArray(pkg.releases)) return pkg.releases;
+  if (pkg.data && Array.isArray(pkg.data.releases)) return pkg.data.releases;
+  return [];
+}
+
+async function loadOcds(days, concurrency, failures, skips) {
+  const file = resolve(root, 'data/eop-ocds-load.sql');
+  const out = createWriteStream(file, { encoding: 'utf8' });
+  await writeChunk(
+    out,
+    `-- Generated by scripts/load-eop.mjs — do not edit by hand.\n` +
+      `-- In-bucket OCDS enrichment from storage.eop.bg.\n`,
+  );
+  const cb = makeSqlBatcher(
+    out,
+    `INSERT INTO raw_egov_contracts (${CONTRACT_STAGING_COLS.join(', ')}) VALUES
+`,
+  );
+  const ab = makeSqlBatcher(
+    out,
+    `INSERT INTO raw_egov_amendments (${AMENDMENT_STAGING_COLS.join(', ')}) VALUES
+`,
+  );
+  const pb = makeSqlBatcher(
+    out,
+    `INSERT INTO raw_ocds_parties (${PARTY_STAGING_COLS.join(', ')}) VALUES
+`,
+  );
+  const sb = makeSqlBatcher(
+    out,
+    `INSERT INTO raw_ocds_award_suppliers (${AWARD_SUPPLIER_STAGING_COLS.join(', ')}) VALUES
+`,
+  );
+  const lb = makeSqlBatcher(
+    out,
+    `INSERT INTO raw_ocds_lots (${LOT_STAGING_COLS.join(', ')}) VALUES
+`,
+  );
+  let contractRows = 0;
+  let amendRows = 0;
+  let partyRows = 0;
+  let supplierRows = 0;
+  let lotRows = 0;
+  let loadedObjects = 0;
+  const flushAll = async () => {
+    await Promise.all([cb.flush(), ab.flush(), pb.flush(), sb.flush(), lb.flush()]);
+  };
+  const writeOcdsWipes = async (source) => {
+    await flushAll();
+    await writeChunk(
+      out,
+      deleteSqlForSources('raw_egov_contracts', [source]) +
+        deleteSqlForSources('raw_egov_amendments', [source]) +
+        deleteSqlForSources('raw_ocds_parties', [source]) +
+        deleteSqlForSources('raw_ocds_award_suppliers', [source]) +
+        deleteSqlForSources('raw_ocds_lots', [source]),
+    );
+  };
+
+  for (let i = 0; i < days.length; i += concurrency) {
+    const slice = days.slice(i, i + concurrency);
+    const dayResults = await Promise.all(
+      slice.map((day) => ocdsPackageForDay(day, failures, skips)),
+    );
+    for (let j = 0; j < slice.length; j++) {
+      const day = slice[j];
+      const result = dayResults[j];
+      const pkg = result.pkg;
+      if (!pkg) {
+        process.stderr.write(`   ocds ${day}: 0 rows
+`);
+        continue;
+      }
+      const source = `ocds:${day}`;
+      loadedObjects++;
+      await writeOcdsWipes(source);
+      const meta = {
+        source,
+        datasetUri: `${BASE_URL}/open-data-${day}/`,
+        resourceUri: result.resourceUri ?? `${BASE_URL}/open-data-${day}/`,
+        year: yearOf(day),
+        fetchedAt,
+        publishedDate: pkg.publishedDate ?? pkg.data?.publishedDate,
+      };
+      let cN = 0;
+      let aN = 0;
+      let pN = 0;
+      let sN = 0;
+      let lN = 0;
+      for (const rel of packageReleases(pkg)) {
+        for (const row of releaseToContracts(rel, meta)) {
+          await cb.push(`(${CONTRACT_STAGING_COLS.map((c) => sqlLiteral(c, row[c])).join(',')})`);
+          cN++;
+        }
+        for (const row of releaseToAmendments(rel, meta)) {
+          await ab.push(`(${AMENDMENT_STAGING_COLS.map((c) => sqlLiteral(c, row[c])).join(',')})`);
+          aN++;
+        }
+        for (const row of releaseToParties(rel, meta)) {
+          await pb.push(`(${PARTY_STAGING_COLS.map((c) => sqlLiteral(c, row[c])).join(',')})`);
+          pN++;
+        }
+        for (const row of releaseToAwardSuppliers(rel, meta)) {
+          await sb.push(
+            `(${AWARD_SUPPLIER_STAGING_COLS.map((c) => sqlLiteral(c, row[c])).join(',')})`,
+          );
+          sN++;
+        }
+        for (const row of releaseToLots(rel, meta)) {
+          await lb.push(`(${LOT_STAGING_COLS.map((c) => sqlLiteral(c, row[c])).join(',')})`);
+          lN++;
+        }
+      }
+      contractRows += cN;
+      amendRows += aN;
+      partyRows += pN;
+      supplierRows += sN;
+      lotRows += lN;
+      process.stderr.write(
+        `   ocds ${day}: ${cN.toLocaleString('en-US')} contracts, ${aN.toLocaleString('en-US')} amendments, ` +
+          `${pN.toLocaleString('en-US')} parties, ${sN.toLocaleString('en-US')} award-suppliers, ${lN.toLocaleString('en-US')} lots
+`,
+      );
+    }
+  }
+  await flushAll();
+  out.end();
+  await once(out, 'finish');
+  process.stderr.write(
+    `==> ocds: ${contractRows.toLocaleString('en-US')} contracts, ${amendRows.toLocaleString('en-US')} amendments, ` +
+      `${partyRows.toLocaleString('en-US')} parties, ${supplierRows.toLocaleString('en-US')} award-suppliers, ` +
+      `${lotRows.toLocaleString('en-US')} lots → ${file} (max stmt ${Math.max(cb.max(), ab.max(), pb.max(), sb.max(), lb.max())})
+`,
+  );
+  return {
+    grand: contractRows + amendRows + partyRows + supplierRows + lotRows,
+    loadedObjects,
+    chunkFiles: [file],
+  };
 }
 
 function tupleForRecord(cfg, cat, day, record) {
@@ -528,14 +813,13 @@ function tupleForRecord(cfg, cat, day, record) {
   return `(${vals.join(',')})`;
 }
 
-async function loadCategory(cat, days, concurrency, failures) {
+async function loadCategory(cat, days, concurrency, failures, skips) {
   const cfg = CATS[cat];
   const insertCols = [...cfg.fixed, ...cfg.fields.map((f) => f[0])];
-  const wipe = deleteSqlForEopSources(cfg.table, cat, days);
 
   // Chunk the output across multiple files so none exceeds Node's ~512MB string cap (wrangler
-  // d1 execute --file reads the whole file into one string). Only the FIRST chunk carries the
-  // DELETE; the rest are INSERT-only continuations, applied in order.
+  // d1 execute --file reads the whole file into one string). Per-day DELETEs are written only for
+  // successfully loaded objects so a benign skip never wipes a day.
   const chunkFiles = [];
   let out = null;
   let bytesInChunk = 0;
@@ -546,7 +830,7 @@ async function loadCategory(cat, days, concurrency, failures) {
     out = createWriteStream(file, { encoding: 'utf8' });
     const head =
       `-- Generated by scripts/load-eop.mjs — do not edit by hand.\n` +
-      (chunkFiles.length === 0 ? wipe : `-- chunk ${chunkFiles.length} (INSERT-only continuation)\n`);
+      (chunkFiles.length === 0 ? '' : `-- chunk ${chunkFiles.length} (INSERT-only continuation)\n`);
     chunkFiles.push(file);
     await writeChunk(out, head);
     bytesInChunk = Buffer.byteLength(head, 'utf8');
@@ -565,6 +849,7 @@ async function loadCategory(cat, days, concurrency, failures) {
   let stmtBytes = headerBytes;
   let grand = 0;
   let maxStmt = 0;
+  let loadedObjects = 0;
 
   const flush = async () => {
     if (!batch.length) return;
@@ -589,13 +874,31 @@ async function loadCategory(cat, days, concurrency, failures) {
     batch.push(tuple);
     stmtBytes += tb;
   };
+  const writeRaw = async (sql) => {
+    await flush();
+    const size = Buffer.byteLength(sql, 'utf8');
+    if (bytesInChunk > 0 && bytesInChunk + size > MAX_FILE_BYTES) {
+      await closeChunk();
+      await openChunk();
+    }
+    await writeChunk(out, sql);
+    bytesInChunk += size;
+  };
 
   for (let i = 0; i < days.length; i += concurrency) {
     const slice = days.slice(i, i + concurrency);
-    const dayResults = await Promise.all(slice.map((day) => recordsForDay(cat, day, failures)));
+    const dayResults = await Promise.all(
+      slice.map((day) => recordsForDay(cat, day, failures, skips)),
+    );
     for (let j = 0; j < slice.length; j++) {
       const day = slice[j];
       const result = dayResults[j];
+      if (!result.loaded) {
+        process.stderr.write(`   ${cat} ${day}: skipped\n`);
+        continue;
+      }
+      loadedObjects++;
+      await writeRaw(deleteSqlForEopSources(cfg.table, cat, [day]));
       let count = 0;
       let dropped = 0;
       for (const record of result.records) {
@@ -609,7 +912,8 @@ async function loadCategory(cat, days, concurrency, failures) {
       }
       grand += count;
       process.stderr.write(`   ${cat} ${day}: ${count.toLocaleString('en-US')} rows`);
-      if (dropped) process.stderr.write(` (${dropped.toLocaleString('en-US')} dropped by keep filter)`);
+      if (dropped)
+        process.stderr.write(` (${dropped.toLocaleString('en-US')} dropped by keep filter)`);
       process.stderr.write('\n');
     }
   }
@@ -620,7 +924,7 @@ async function loadCategory(cat, days, concurrency, failures) {
     `==> ${cat}: ${grand.toLocaleString('en-US')} rows → ${chunkFiles.length} file(s) (max stmt ${maxStmt})\n`,
   );
 
-  return { grand, chunkFiles };
+  return { grand, loadedObjects, chunkFiles };
 }
 
 function applyChunkFiles(chunkFiles, remote) {
@@ -635,66 +939,92 @@ function applyChunkFiles(chunkFiles, remote) {
 }
 
 function reportFailures(failures) {
+  if (!failures.length) return;
   process.stderr.write(
     `\n!! EOP fetch failures (${failures.length}) — re-run these day/category slices:\n`,
   );
   for (const f of failures) process.stderr.write(`   ${f.day} ${f.cat}: ${f.error}\n`);
+}
+function reportSkips(skips) {
+  if (!skips.length) return;
+  const byReason = new Map();
+  for (const s of skips) {
+    const key = s.reason;
+    const v = byReason.get(key) || { count: 0, examples: [] };
+    v.count++;
+    if (v.examples.length < 8) v.examples.push(`${s.day}/${s.cat}`);
+    byReason.set(key, v);
+  }
+  process.stderr.write(`\n-- benign skips (${skips.length})\n`);
+  for (const [reason, v] of byReason) {
+    process.stderr.write(
+      `   ${reason}: ${v.count} (${v.examples.join(', ')}${v.count > v.examples.length ? ', ...' : ''})\n`,
+    );
+  }
 }
 
 async function main() {
   const from = arg('from') || DEFAULT_FROM;
   const to = arg('to') || DEFAULT_TO;
   const cat = arg('cat');
-  const cats = cat ? [cat] : CATEGORIES;
+  const noOcds = !!arg('no-ocds');
+  const ocdsOnly = !!arg('ocds-only');
+  if (noOcds && ocdsOnly) throw new Error('--no-ocds and --ocds-only are mutually exclusive');
+  const cats = ocdsOnly ? [] : cat ? [cat] : CATEGORIES;
   for (const c of cats) {
     if (!CATS[c]) throw new Error(`unknown --cat=${c}; expected ${CATEGORIES.join('|')}`);
   }
   const rawConcurrency = Number(arg('concurrency') || DEFAULT_CONCURRENCY);
-  const concurrency = Number.isFinite(rawConcurrency) && rawConcurrency > 0 ? Math.floor(rawConcurrency) : DEFAULT_CONCURRENCY;
+  const concurrency =
+    Number.isFinite(rawConcurrency) && rawConcurrency > 0
+      ? Math.floor(rawConcurrency)
+      : DEFAULT_CONCURRENCY;
   const apply = !!arg('apply');
   const remote = !!arg('remote');
   const days = daysBetween(from, to);
 
   process.stderr.write(
-    `==> EOP load ${from}..${to} (${days.length} days), cats=${cats.join(',')}, concurrency=${concurrency}, base=${BASE_URL}\n`,
+    `==> EOP load ${from}..${to} (${days.length} days), cats=${cats.join(',') || '(none)'}, ocds=${!noOcds}, concurrency=${concurrency}, base=${BASE_URL}\n`,
   );
   const totals = {};
   const chunkFilesByCat = {};
+  const loadedObjectsByCat = {};
   const failures = [];
-
-  if (apply) {
-    for (const c of cats) await preflightCategory(c, days, concurrency, failures);
-    if (failures.length) {
-      reportFailures(failures);
-      process.stderr.write(
-        '\n!! aborting --apply before generating or applying SQL because fetch failures occurred\n',
-      );
-      process.exitCode = 1;
-      return;
-    }
-  }
+  const skips = [];
 
   for (const c of cats) {
-    const result = await loadCategory(c, days, concurrency, failures);
+    const result = await loadCategory(c, days, concurrency, failures, skips);
     totals[c] = result.grand;
+    loadedObjectsByCat[c] = result.loadedObjects;
     chunkFilesByCat[c] = result.chunkFiles;
-    if (apply && failures.length) break;
   }
-  if (failures.length) {
-    reportFailures(failures);
+  if (!noOcds) {
+    const result = await loadOcds(days, concurrency, failures, skips);
+    totals.ocds = result.grand;
+    loadedObjectsByCat.ocds = result.loadedObjects;
+    chunkFilesByCat.ocds = result.chunkFiles;
+  }
+
+  const loadedObjects = Object.values(loadedObjectsByCat).reduce((sum, n) => sum + n, 0);
+  reportSkips(skips);
+  reportFailures(failures);
+  if (loadedObjects === 0) {
+    process.stderr.write(
+      '\n!! aborting: the requested window produced zero successfully fetched objects (check date range/base URL)\n',
+    );
     process.exitCode = 1;
-    if (apply) {
-      process.stderr.write(
-        '\n!! aborting --apply before applying SQL because fetch failures occurred\n',
-      );
-      return;
-    }
+    return;
   }
 
   if (apply) {
-    for (const c of cats) applyChunkFiles(chunkFilesByCat[c], remote);
+    for (const c of cats) {
+      if (loadedObjectsByCat[c] > 0) applyChunkFiles(chunkFilesByCat[c], remote);
+    }
+    if (!noOcds && loadedObjectsByCat.ocds > 0) applyChunkFiles(chunkFilesByCat.ocds, remote);
   }
-  process.stderr.write(`\n==> done: ${JSON.stringify(totals)}\n`);
+  process.stderr.write(
+    `\n==> done: ${JSON.stringify(totals)} objects=${JSON.stringify(loadedObjectsByCat)} skips=${skips.length} failures=${failures.length}\n`,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
