@@ -1,4 +1,10 @@
 import {
+  BASE_AMENDMENT_COLS,
+  BASE_CONTRACT_COLS,
+  BASE_TENDER_COLS,
+  type BaseStagingRow,
+} from './base';
+import {
   AMENDMENT_STAGING_COLS,
   AWARD_SUPPLIER_STAGING_COLS,
   CONTRACT_STAGING_COLS,
@@ -18,13 +24,14 @@ type StagingRow =
   | AmendmentStagingRow
   | PartyStagingRow
   | AwardSupplierStagingRow
-  | LotStagingRow;
+  | LotStagingRow
+  | BaseStagingRow;
 
 async function upsertStagingRows<T extends StagingRow>(
   db: D1Database,
   table: string,
   source: string,
-  cols: (keyof T)[],
+  cols: readonly string[],
   rows: T[],
 ): Promise<number> {
   const deleteStmt = db.prepare(`DELETE FROM ${table} WHERE source = ?`).bind(source);
@@ -36,9 +43,10 @@ async function upsertStagingRows<T extends StagingRow>(
   }
 
   for (let i = 0; i < rows.length; i += CHUNK) {
-    const stmts = rows
-      .slice(i, i + CHUNK)
-      .map((r) => db.prepare(sql).bind(...cols.map((c) => r[c] ?? null)));
+    const stmts = rows.slice(i, i + CHUNK).map((r) => {
+      const record = r as Record<string, unknown>;
+      return db.prepare(sql).bind(...cols.map((c) => record[c] ?? null));
+    });
     if (i === 0) stmts.unshift(deleteStmt);
     await db.batch(stmts);
   }
@@ -90,4 +98,28 @@ export async function upsertLotStaging(
   rows: LotStagingRow[],
 ): Promise<number> {
   return upsertStagingRows(db, 'raw_ocds_lots', source, LOT_STAGING_COLS, rows);
+}
+
+export async function upsertBaseContractStaging(
+  db: D1Database,
+  source: string,
+  rows: BaseStagingRow[],
+): Promise<number> {
+  return upsertStagingRows(db, 'raw_egov_contracts', source, BASE_CONTRACT_COLS, rows);
+}
+
+export async function upsertBaseTenderStaging(
+  db: D1Database,
+  source: string,
+  rows: BaseStagingRow[],
+): Promise<number> {
+  return upsertStagingRows(db, 'raw_egov_tenders', source, BASE_TENDER_COLS, rows);
+}
+
+export async function upsertBaseAmendmentStaging(
+  db: D1Database,
+  source: string,
+  rows: BaseStagingRow[],
+): Promise<number> {
+  return upsertStagingRows(db, 'raw_egov_amendments', source, BASE_AMENDMENT_COLS, rows);
 }

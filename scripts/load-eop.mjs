@@ -19,6 +19,12 @@ import { once } from 'node:events';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
+  BASE_CATEGORIES,
+  baseInsertColumns,
+  baseSqlLiteral,
+  mapBaseRecord,
+} from '../packages/ingest/src/base.ts';
+import {
   AMENDMENT_STAGING_COLS,
   AWARD_SUPPLIER_STAGING_COLS,
   CONTRACT_STAGING_COLS,
@@ -47,81 +53,11 @@ const BASE_URL = (process.env.EOP_OPEN_DATA_BASE_URL || 'https://storage.eop.bg'
   '',
 );
 const CATEGORIES = ['contracts', 'tenders', 'annexes'];
-const RESOURCE_WORDS = {
-  contracts: 'договори',
-  tenders: 'поръчки',
-  annexes: 'анекси',
-};
 const RESOURCE_FILES = {
   contracts: 'contracts.json',
   tenders: 'tenders.json',
   annexes: 'annexes.json',
 };
-
-function clean(v) {
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  return s === '' ? null : s;
-}
-function toInt(v) {
-  const s = clean(v);
-  if (s === null) return null;
-  const n = parseInt(s.replace(/\s/g, ''), 10);
-  return Number.isFinite(n) ? n : null;
-}
-// European numbers: comma decimal, optional dot/space thousands.
-function toReal(v) {
-  let s = clean(v);
-  if (s === null) return null;
-  s = s.replace(/\s/g, '');
-  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : null;
-}
-function toBool(v) {
-  const s = clean(v);
-  if (s === null) return null;
-  const t = s.toLowerCase();
-  if (['да', 'true', '1', 'yes'].includes(t)) return 1;
-  if (['не', 'false', '0', 'no'].includes(t)) return 0;
-  return null;
-}
-// DD.MM.YYYY or DD/MM/YYYY, plus ISO timestamps/dates from the EOP feed.
-function toISODate(v) {
-  const s = clean(v);
-  if (s === null) return null;
-  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|\b)/);
-  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-  const m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})/);
-  return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : s;
-}
-function toSecuredFinancing(v) {
-  const unsecured = toBool(v);
-  return unsecured === null ? null : unsecured === 1 ? 0 : 1;
-}
-function toVariants(v) {
-  const s = clean(v);
-  if (s === 'Разрешено') return 1;
-  if (s === 'Забранено') return 0;
-  return null;
-}
-function coerce(kind, v) {
-  if (kind === 'int') return toInt(v);
-  if (kind === 'real') return toReal(v);
-  if (kind === 'bool') return toBool(v);
-  if (kind === 'date') return toISODate(v);
-  if (kind === 'secured_inverse') return toSecuredFinancing(v);
-  if (kind === 'variants_enum') return toVariants(v);
-  return clean(v);
-}
-function lit(kind, value) {
-  if (value === null) return 'NULL';
-  if (['int', 'real', 'bool', 'secured_inverse', 'variants_enum'].includes(kind))
-    return String(value);
-  return `'${String(value)
-    .replace(/[\x00-\x1F]/g, '')
-    .replace(/'/g, "''")}'`;
-}
 
 const SQL_REAL_COLS = new Set([
   'signing_value',
@@ -151,184 +87,6 @@ function sqlLiteral(col, value) {
 }
 
 const fetchedAt = new Date().toISOString().replace('.000Z', 'Z');
-const CATS = {
-  contracts: {
-    table: 'raw_egov_contracts',
-    fixed: ['source', 'dataset_year', 'dataset_variant', 'fetched_at', 'needs_enrichment'],
-    fixedVals: (day) => [
-      `'eop:contracts:${day}'`,
-      String(yearOf(day)),
-      `'eop'`,
-      `'${fetchedAt}'`,
-      '0',
-    ],
-    keep: (record) => clean(record.contractNumber) !== null,
-    fields: [
-      ['seq_no', null, 'text'],
-      ['document_number', 'noticeId', 'text'],
-      ['published_at', 'publicationDate', 'date'],
-      ['unp', 'uniqueProcurementNumber', 'text'],
-      ['tender_ext_id', 'tenderId', 'text'],
-      ['procedure_type', 'procedureType', 'text'],
-      ['procurement_subject', 'tenderName', 'text'],
-      ['cpv_code', 'tenderMainCpv', 'text'],
-      ['cpv_description', 'tenderMainCpvDescription', 'text'],
-      ['contract_kind', 'typeOfContract', 'text'],
-      ['estimated_value', 'estimatedValue', 'real'],
-      ['procurement_currency', 'currency', 'text'],
-      ['legal_basis', 'legalBasis', 'text'],
-      ['award_criteria', 'awardMethod', 'text'],
-      ['joint_procurement', 'isJointProcurement', 'bool'],
-      ['central_purchasing', 'isCentralPurchasingAuthority', 'bool'],
-      ['authority_name', 'buyerName', 'text'],
-      ['authority_eik', 'buyerRegistryNumber', 'text'],
-      ['authority_type', 'buyerType', 'text'],
-      ['main_activity', 'buyerMainActivity', 'text'],
-      ['notice_type', 'noticeType', 'text'],
-      ['lot_id', 'lotIdentifier', 'text'],
-      ['contract_number', 'contractNumber', 'text'],
-      ['contract_date', 'contractDate', 'date'],
-      ['signing_value', 'contractValue', 'real'],
-      ['currency', 'contractCurrency', 'text'],
-      ['contract_subject', 'contractSubject', 'text'],
-      ['awarded_to_group', 'awardedToGroup', 'bool'],
-      ['contractor_eik', 'supplierRegisterNumber', 'text'],
-      ['contractor_name', 'supplierName', 'text'],
-      ['contractor_country', 'supplierNationality', 'text'],
-      ['winner_owner_nationality', null, 'text'],
-      ['winner_size', 'supplierCompanySizeCode', 'text'],
-      ['has_subcontractor', 'hasSubcontractors', 'bool'],
-      ['subcontractor_name', 'subcontractorName', 'text'],
-      ['subcontractor_eik', 'subcontractorRegistryNumber', 'text'],
-      ['subcontract_share', 'subcontractingPercent', 'text'],
-      ['subcontract_value', 'subcontractingAmount', 'real'],
-      ['eu_funded', 'isEuFunded', 'bool'],
-      ['eu_programme', 'europeanProgram', 'text'],
-      ['framework_notice', 'isFrameworkAgreement', 'bool'],
-      ['framework_contract', 'frameworkAgreementContract', 'bool'],
-      ['related_to', 'linkedTenders', 'text'],
-      ['dps_contract', 'contractUnderQs', 'bool'],
-      ['accelerated', 'isAcceleratedProcedure', 'bool'],
-      ['eauction', 'hasAuctionQuotationMethod', 'bool'],
-      ['strategic', 'isStrategicTender', 'bool'],
-      ['outside_zop', 'isExceptionContract', 'bool'],
-      ['exemption_legal_basis', 'directAwardJustification', 'text'],
-      ['bids_received', 'offersCount', 'int'],
-      ['bids_sme', 'smeOffersCount', 'int'],
-      ['bids_rejected', 'disqualifiedOffersCount', 'int'],
-      ['bids_non_eea', 'noEeaOffersCount', 'int'],
-      ['duration_days', 'contractPeriod', 'int'],
-      ['non_award', 'noAwarding', 'bool'],
-      ['correction_number', null, 'text'],
-      ['ted_link', 'linkToOjEu', 'text'],
-    ],
-  },
-  tenders: {
-    table: 'raw_egov_tenders',
-    fixed: ['source', 'dataset_year', 'fetched_at'],
-    fixedVals: (day) => [`'eop:tenders:${day}'`, String(yearOf(day)), `'${fetchedAt}'`],
-    keep: () => true,
-    fields: [
-      ['seq_no', null, 'text'],
-      ['document_number', 'noticeId', 'text'],
-      ['published_at', 'publicationDate', 'date'],
-      ['unp', 'uniqueProcurementNumber', 'text'],
-      ['tender_id', 'tenderId', 'text'],
-      ['procedure_type', 'procedureType', 'text'],
-      ['procurement_subject', 'subject', 'text'],
-      ['cpv_code', 'mainCpvCode', 'text'],
-      ['cpv_description', 'mainCpvDescription', 'text'],
-      ['contract_kind', 'typeOfContract', 'text'],
-      ['estimated_value', 'estimatedValue', 'real'],
-      ['currency', 'currency', 'text'],
-      ['legal_basis', 'legalBasis', 'text'],
-      ['award_criteria', 'awardMethod', 'text'],
-      ['joint_procurement', 'hasJointProcurement', 'bool'],
-      ['central_purchasing', 'isCentralPurchasingAuthority', 'bool'],
-      ['authority_name', 'buyerName', 'text'],
-      ['authority_eik', 'buyerRegistryNumber', 'text'],
-      ['authority_type', 'buyerType', 'text'],
-      ['main_activity', 'buyerMainActivity', 'text'],
-      ['deadline', 'submissionDeadline', 'text'],
-      ['notice_type', 'noticeType', 'text'],
-      ['lot_id', 'lotIdentifier', 'text'],
-      ['eu_funded', 'isEuFunded', 'bool'],
-      ['eu_programme', 'europeanProgram', 'text'],
-      ['secured_financing', 'hasUnsecuredFunding', 'secured_inverse'],
-      ['framework_notice', 'isFrameworkAgreement', 'bool'],
-      ['dps_notice', 'isDpsProcedure', 'bool'],
-      ['accelerated', 'isAcceleratedProcedure', 'bool'],
-      ['eauction', 'hasElectronicAuction', 'bool'],
-      ['strategic', 'isStrategicProcurement', 'bool'],
-      ['green', 'isGreenProcurement', 'bool'],
-      ['social', 'isSocialProcurement', 'bool'],
-      ['innovation', 'isInnovationProcurement', 'bool'],
-      ['options', 'hasOptions', 'bool'],
-      ['renewable', 'hasRenewal', 'bool'],
-      ['reserved', 'isReservedProcurement', 'bool'],
-      ['variants', 'hasVariants', 'variants_enum'],
-      ['num_lots', 'lotsCount', 'int'],
-      ['place_of_performance', 'executionPlaceNuts', 'text'],
-      ['lot_name', 'lotTenderName', 'text'],
-      ['duration', 'tenderDuration', 'text'],
-      ['duration_unit', 'tenderDurationUnit', 'text'],
-      ['start_date', 'tenderStartDate', 'date'],
-      ['end_date', 'tenderEndDate', 'date'],
-      ['einvoicing', 'electronicInvoicing', 'bool'],
-      ['epayment', 'electronicPayment', 'bool'],
-      ['eordering', 'electronicOrdering', 'bool'],
-      ['corrections_count', 'changeNoticeCount', 'int'],
-      ['cancelled', 'isCancelled', 'bool'],
-      ['correction_number', null, 'text'],
-      ['ted_link', 'linkToOjEu', 'text'],
-    ],
-  },
-  annexes: {
-    table: 'raw_egov_amendments',
-    fixed: ['source', 'dataset_year', 'dataset_variant', 'fetched_at'],
-    fixedVals: (day) => [`'eop:annexes:${day}'`, String(yearOf(day)), `'eop'`, `'${fetchedAt}'`],
-    keep: (record) => clean(record.contractNumber) !== null,
-    fields: [
-      ['seq_no', null, 'text'],
-      ['document_number', 'noticeId', 'text'],
-      ['published_at', 'publicationDate', 'date'],
-      ['unp', 'uniqueProcurementNumber', 'text'],
-      ['tender_ext_id', 'tenderId', 'text'],
-      ['procedure_type', 'procedureType', 'text'],
-      ['procurement_subject', 'tenderName', 'text'],
-      ['cpv_code', 'tenderMainCpv', 'text'],
-      ['cpv_description', 'tenderMainCpvDescription', 'text'],
-      ['contract_kind', 'typeOfContract', 'text'],
-      ['authority_name', 'buyerName', 'text'],
-      ['authority_eik', 'buyerRegistryNumber', 'text'],
-      ['authority_type', 'buyerType', 'text'],
-      ['main_activity', 'buyerMainActivity', 'text'],
-      ['lot_id', 'lotIdentifier', 'text'],
-      ['contract_number', 'contractNumber', 'text'],
-      ['contract_date', 'contractDate', 'date'],
-      ['value_before', 'lastContractValue', 'real'],
-      ['value_after', 'currentContractValue', 'real'],
-      ['value_delta', 'contractValueDifference', 'real'],
-      ['currency', 'contractCurrency', 'text'],
-      ['contract_subject', 'contractSubject', 'text'],
-      ['awarded_to_group', 'awardedToGroup', 'bool'],
-      ['contractor_eik', 'supplierRegisterNumber', 'text'],
-      ['contractor_name', 'supplierName', 'text'],
-      ['contractor_country', 'supplierNationality', 'text'],
-      ['winner_owner_nationality', null, 'text'],
-      ['winner_size', 'supplierCompanySizeCode', 'text'],
-      ['eu_funded', 'isEuFunded', 'bool'],
-      ['eu_programme', 'europeanProgram', 'text'],
-      ['description', 'changeDescription', 'text'],
-      ['reason', 'changeReason', 'text'],
-      ['circumstances', 'changeReasonDescription', 'text'],
-      ['outside_zop', 'isExceptionContract', 'bool'],
-      ['exemption_legal_basis', 'directAwardJustification', 'text'],
-      ['correction_number', null, 'text'],
-      ['ted_link', 'linkToOjEu', 'text'],
-    ],
-  },
-};
 
 function arg(name) {
   const hit = process.argv.find((a) => a === `--${name}` || a.startsWith(`--${name}=`));
@@ -497,14 +255,6 @@ async function readBucketKeysFor(day) {
     }
     throw err;
   }
-}
-function keyForCat(keys, cat) {
-  const word = RESOURCE_WORDS[cat];
-  const matches = keys.filter((key) => key.includes(word));
-  if (matches.length > 1) {
-    process.stderr.write(`!! ${cat}: multiple keys matched ${word}; using first\n`);
-  }
-  return matches[0] || null;
 }
 async function fetchObjectJson(cat, day, key) {
   const bucketUrl = `${BASE_URL}/open-data-${day}/`;
@@ -803,19 +553,16 @@ async function loadOcds(days, concurrency, failures, skips) {
   };
 }
 
-function tupleForRecord(cfg, cat, day, record) {
-  if (!cfg.keep(record)) return null;
-  const vals = [...cfg.fixedVals(day)];
-  for (const [, eopKey, kind] of cfg.fields) {
-    const value = eopKey === null ? null : coerce(kind, record[eopKey]);
-    vals.push(lit(kind, value));
-  }
+function tupleForRecord(_cfg, cat, day, record) {
+  const row = mapBaseRecord(cat, record, { day, fetchedAt });
+  if (!row) return null;
+  const vals = baseInsertColumns(cat).map((col) => baseSqlLiteral(cat, col, row[col]));
   return `(${vals.join(',')})`;
 }
 
 async function loadCategory(cat, days, concurrency, failures, skips) {
-  const cfg = CATS[cat];
-  const insertCols = [...cfg.fixed, ...cfg.fields.map((f) => f[0])];
+  const cfg = BASE_CATEGORIES[cat];
+  const insertCols = baseInsertColumns(cat);
 
   // Chunk the output across multiple files so none exceeds Node's ~512MB string cap (wrangler
   // d1 execute --file reads the whole file into one string). Per-day DELETEs are written only for
@@ -972,7 +719,8 @@ async function main() {
   if (noOcds && ocdsOnly) throw new Error('--no-ocds and --ocds-only are mutually exclusive');
   const cats = ocdsOnly ? [] : cat ? [cat] : CATEGORIES;
   for (const c of cats) {
-    if (!CATS[c]) throw new Error(`unknown --cat=${c}; expected ${CATEGORIES.join('|')}`);
+    if (!BASE_CATEGORIES[c])
+      throw new Error(`unknown --cat=${c}; expected ${CATEGORIES.join('|')}`);
   }
   const rawConcurrency = Number(arg('concurrency') || DEFAULT_CONCURRENCY);
   const concurrency =
