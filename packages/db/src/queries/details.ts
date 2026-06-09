@@ -523,6 +523,11 @@ export async function getContract(
         isCurrent: l.lot_id === r.lot_id,
       });
     }
+    // Lot labels are numeric strings ("1".."103"). The SQL `ORDER BY l.id` collates the full lot id
+    // as text, so they come back lexically (1, 10, 100, 2…). Re-sort the assembled rows with a
+    // numeric-aware comparator so the table reads 1, 2, 3 … 10 … 100 (falls back to lexical for any
+    // non-numeric label).
+    rows.sort((a, b) => a.lotLabel.localeCompare(b.lotLabel, 'bg', { numeric: true }));
     lots = {
       unp: r.unp,
       numLots: r.num_lots,
