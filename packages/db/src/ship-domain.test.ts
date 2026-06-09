@@ -34,6 +34,7 @@ describe('ship-domain', () => {
     try {
       readScript(workDb, resolve(root, 'packages/db/migrations/0000_init.sql'));
       readScript(workDb, resolve(root, 'packages/db/migrations/0001_amendments.sql'));
+      readScript(workDb, resolve(root, 'packages/db/migrations/0002_parties.sql'));
       sqlite(
         workDb,
         `INSERT INTO authorities (id, name, bulstat, type) VALUES ('auth:1', 'Authority line 1
@@ -64,5 +65,5 @@ Description line 2', 'test');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 30_000);
+  }, 120_000);
 });

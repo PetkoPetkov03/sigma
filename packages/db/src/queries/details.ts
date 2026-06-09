@@ -379,6 +379,7 @@ interface ContractDetailRow {
   cpv_code: string | null;
   cpv_description: string | null;
   num_lots: number | null;
+  eop_tender_id: string | null;
   estimated_value: number | null;
   tender_currency: string;
   tender_fx_rate: number | null;
@@ -408,6 +409,7 @@ export async function getContract(
               c.amount_eur, c.signing_value_eur, c.current_value_eur, c.value_flag,
               c.bids_received, c.bids_rejected, c.bids_sme, c.bids_non_eea,
               t.title, t.source_id AS unp, t.procedure_type, t.cpv_code, t.cpv_description, t.num_lots,
+              t.eop_tender_id,
               t.estimated_value, t.currency AS tender_currency, t.start_date, t.end_date,
               (SELECT f.eur_per_unit FROM fx_rates f WHERE f.base_currency = t.currency AND f.rate_date = c.signed_at) AS tender_fx_rate,
               t.authority_id, a.name AS authority_name, a.type_group AS authority_type_group,
@@ -543,6 +545,7 @@ export async function getContract(
     unp: r.unp,
     contractNumber: r.contract_number,
     documentNumber: r.document_number,
+    eopTenderId: r.eop_tender_id,
     lotLabel: r.lot_id ? (r.lot_id.split(':').pop() ?? null) : null,
     signedAt: r.signed_at,
     publishedAt: r.published_at,

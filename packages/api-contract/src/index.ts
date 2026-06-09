@@ -323,6 +323,10 @@ export interface ContractDetail {
   unp: string;
   contractNumber: string | null;
   documentNumber: string | null;
+  /** Raw EOP numeric tenderId of the parent procedure. The public ЦАИС ЕОП portal keys its documents
+   *  page on this id (https://app.eop.bg/today/<eopTenderId>) — it is NOT the noticeId/documentNumber.
+   *  Null when the source carried no tenderId (then the documents deep-link is hidden). */
+  eopTenderId: string | null;
   lotLabel: string | null;
   signedAt: string | null;
   publishedAt: string | null;

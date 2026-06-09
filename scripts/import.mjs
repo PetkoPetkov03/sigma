@@ -4,7 +4,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeCatchupWindow, daysInWindow } from '../packages/ingest/src/ocds.ts';
 
@@ -209,6 +209,8 @@ function runWorkBackfill() {
 
   sqliteFile(workDb, resolve(root, 'packages/db/migrations/0000_init.sql'));
   sqliteFile(workDb, resolve(root, 'packages/db/migrations/0001_amendments.sql'));
+  sqliteFile(workDb, resolve(root, 'packages/db/migrations/0002_parties.sql'));
+  sqliteFile(workDb, resolve(root, 'packages/db/migrations/0003_tender_eop_id.sql'));
   sqliteFile(workDb, resolve(root, 'scripts/work-staging-schema.sql'));
 
   let loadFlags = explicitRangeFlags();
@@ -218,9 +220,13 @@ function runWorkBackfill() {
     console.log(`==> catchup window ${plan.from}..${plan.to} (${plan.gapDays} days, latest=${plan.maxLoadedDate || 'none'}, derive=${plan.derive})`);
   }
 
-  run('node', ['scripts/load-eop.mjs', '--apply', `--work-db=${workDb}`, `--out=${resolve(workDir, 'eop-load.sql')}`, ...loadFlags]);
+  // Derive intermediate-SQL filenames from the work-DB basename so two backfills sharing a work
+  // directory (e.g. a convergence harness running full + windowed loads side by side) never clobber
+  // each other's load SQL.
+  const stem = basename(workDb, '.sqlite');
+  run('node', ['scripts/load-eop.mjs', '--apply', `--work-db=${workDb}`, `--out=${resolve(workDir, `${stem}.eop-load.sql`)}`, ...loadFlags]);
   sqliteFile(workDb, resolve(root, 'scripts/derive-amendments.sql'));
-  run('node', ['scripts/load-fx.mjs', '--apply', `--work-db=${workDb}`, `--out=${resolve(workDir, 'fx-load.sql')}`]);
+  run('node', ['scripts/load-fx.mjs', '--apply', `--work-db=${workDb}`, `--out=${resolve(workDir, `${stem}.fx-load.sql`)}`]);
   sqliteFile(workDb, resolve(root, 'scripts/load-nuts.sql'));
   sqliteFile(workDb, resolve(root, 'scripts/normalize-egov.sql'));
   sqliteFile(workDb, resolve(root, 'scripts/promote-amendments.sql'));

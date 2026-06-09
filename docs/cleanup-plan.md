@@ -5,9 +5,10 @@ working tree is volatile, so anchor on symbol/file names and re-ground at execut
 
 **Scope rules (per decisions):**
 - `mocks/` and `docs/` are **left as-is** — out of scope for this cleanup.
-- The `raw_egov_*` rename is its own separate refactor (§3), not bundled with the deletions.
-- Execute **after** the in-flight `etl-work-db-split` refactor settles (the tree currently carries that
-  session's uncommitted WIP).
+- The `raw_egov_*` / `raw_ocds_*` staging tables **stay** — they are live transform-only staging, never
+  persisted in the served DB (see §3). Not obsolete, not renamed.
+- The `etl-work-db-split` re-architecture has **landed on `main`**; re-ground against the current tree
+  before executing (other ETL work, e.g. R3, may still be in flight).
 
 **Provenance:** the orphan/dead-code findings come from a symbol-level grep audit (authoritative).
 `graphify` (installed locally for Claude + Codex) was used to map module-level dependencies — it
@@ -51,29 +52,32 @@ The deploy workflow targets only web+etl, so it is unaffected.
 - the unreachable `admin` arm of the id-prefix CASE in `normalize-egov.sql` (live ids are `c:e:%`/`c:o:%`),
 - the admin "bare-id rows win" guards in `refresh-slice.sql`.
 
-**Keep — looks admin/egov but the eop path reuses it:** the `raw_egov_*` staging tables (see §3), the
-`raw_ocds_*` tables, the OCDS mappers in `@sigma/ingest`, the `idx_egov_*` indexes, and the FX + NUTS
-**reference** loaders (`load-fx.mjs` minus its admin branch; `load-nuts.sql`).
+**Keep — looks admin/egov but the eop path reuses it:** the `raw_egov_*` staging tables (transform-only
+— see §3), the `raw_ocds_*` tables, the OCDS mappers in `@sigma/ingest`, the `idx_egov_*` indexes, and
+the FX + NUTS **reference** loaders (`load-fx.mjs` minus its admin branch; `load-nuts.sql`).
 
 ---
 
-## 3. Rename `raw_egov_*` → eop-named staging (separate refactor)
+## 3. `raw_egov_*` / `raw_ocds_*` staging — KEEP (transform-only, never served)
 
-The `raw_egov_*` staging tables and `idx_egov_*` indexes are misnamed: they are now fed by `eop:%`
-rows, not `data.egov.bg`. The "unified eop+ocds ETL" direction eliminates the `egov` naming.
+These are **not** obsolete and are **not** renamed — they are the live load+transform staging schema.
+The architecture invariant (the work-DB split already on `main`) is that **no `raw_*` table ever
+persists in the served database**:
+- **Backfill:** `load-eop` populates `raw_egov_contracts/_tenders/_amendments` (+ `raw_ocds_*`) in a
+  throwaway sqlite **work DB**; the transforms (`normalize-egov.sql`, `derive-amendments.sql`) read them
+  to build the domain; only the domain / precompute / reference tables ship to the served D1.
+- **Live refresh (Worker):** the same tables are created **transiently** in the served D1, the window is
+  staged into them, `refresh-slice.sql` reads them, and they are **dropped at the end of the run**.
+- Their DDL lives in `scripts/work-staging-schema.sql` (applied to the work DB / created transiently),
+  **not** in `0000_init.sql`. The served DB holds **zero `raw_*` tables** — that is the core invariant.
 
-> **Note:** the `eop-ocds-unified-etl` branch is **not present** in this repo (no local/remote ref;
-> every branch here still uses `raw_egov_*`). Reconcile with that branch when it lands, or do the
-> rename here from scratch.
+So keep the `raw_egov_*` / `raw_ocds_*` tables, the `idx_egov_*` / `idx_ocds_*` indexes, and the OCDS
+mappers as-is. The `egov` name reflects the data **shape**, independent of the storage.eop.bg source —
+the earlier "rename to eop-named staging" idea was based on a misunderstanding and is dropped.
 
-This is a **rename, not a deletion** (the tables are live). The change surface a rename must touch:
-- **schema:** the `raw_egov_*` table + `idx_egov_*` index definitions in `work-staging-schema.sql`;
-- **ingest:** the table maps in `base.ts`/`staging.ts`, and the upsert/delete SQL generation;
-- **SQL pipeline:** `normalize-egov.sql`, `refresh-slice.sql`, `derive-amendments.sql`, `promote-amendments.sql`;
-- **readers:** the `FROM raw_egov_*` reads in `import.mjs` and `load-fx.mjs`;
-- **refresh lifecycle:** the transient-staging name list in `@sigma/ingest`'s `refresh.ts`;
-- **tests:** `refresh-slice.test.ts`, `ocds.test.ts`, `eop.test.ts`, `load-eop.test.mjs`, `migrations.test.ts`.
-- Consider renaming `normalize-egov.sql` itself in the same pass.
+> **Upcoming (R3, in progress):** a curated **served** parties projection table for OCDS enrichment — a
+> clean domain-style projection, distinct from the transient `raw_ocds_parties` (which stays transient).
+> Account for that table when it lands; it is not part of this cleanup.
 
 ---
 
@@ -138,9 +142,10 @@ with them, not before, or the build breaks):**
 
 ## 7. Owner-gated (decide intent before removing)
 
-- **`raw_ocds_award_suppliers`** — it is staged (a writer exists) but **never read** (no `FROM`/`JOIN`).
-  Looks like wired-but-unused supplier normalization. If supplier normalization is abandoned, remove the
-  table together with its writer rows; otherwise keep.
+- **`raw_ocds_award_suppliers`** — staged (a writer exists) but currently **never read** (no `FROM`/`JOIN`).
+  Wired-but-unused supplier normalization. The **R3** served-parties / OCDS-enrichment work (§3) may
+  consume it — confirm against R3 first; remove the table + its writer only if supplier normalization is
+  genuinely abandoned.
 
 ---
 
@@ -150,8 +155,9 @@ with them, not before, or the build breaks):**
   wires `@sigma/analysis` into the web app.
 - `@sigma/db`, `@sigma/config`, `@sigma/shared`, `@sigma/api-contract` (live parts);
   `CpvSector`/`RiskBand`/`requireEnv`.
-- FX + NUTS reference data; the `raw_egov_*` / `raw_ocds_*` staging tables and OCDS mappers (live);
-  the `bidders` / `authorities` master tables.
+- FX + NUTS reference data; the `raw_egov_*` / `raw_ocds_*` staging tables, `idx_egov_*` / `idx_ocds_*`
+  indexes, and OCDS mappers — **live transform-only staging, never served** (§3); the `bidders` /
+  `authorities` master tables.
 - `apps/web`, `apps/etl`.
 - `mocks/` and `docs/` — intentionally untouched this pass. (Aside: `docs/deploy.md`'s cron section
   still describes the retired `data.egov.bg` feed and is stale, but it is out of scope here.)
@@ -166,5 +172,4 @@ with them, not before, or the build breaks):**
 4. **Single-source EOP strip** (§2).
 5. **TR chain** (§4) and **consortium layer** (§5), each atomic.
 6. **Config orphans** (§6).
-7. **`raw_egov_*` rename** (§3) as its own separate change.
-8. `pnpm install`; verify `pnpm --filter @sigma/ingest test`, then `pnpm -w typecheck` (gate per-package — `db` `details.test.ts` is pre-existingly red), `pnpm -w build`, `pnpm -w test`; confirm the deploy workflow still resolves `@sigma/web` + `@sigma/etl`.
+7. `pnpm install`; verify `pnpm --filter @sigma/ingest test`, then `pnpm -w typecheck` (gate per-package — `db` `details.test.ts` is pre-existingly red), `pnpm -w build`, `pnpm -w test`; confirm the deploy workflow still resolves `@sigma/web` + `@sigma/etl`.

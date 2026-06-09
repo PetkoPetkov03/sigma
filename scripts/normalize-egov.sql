@@ -78,7 +78,7 @@ INSERT OR IGNORE INTO tenders
    procedure_type, contract_kind, num_lots, status, published_at, deadline_at,
    legal_basis, award_criteria, main_activity, notice_type,
    place_of_performance, start_date, end_date, duration, duration_unit,
-   eu_programme, green, social, innovation, eauction, cancelled)
+   eu_programme, green, social, innovation, eauction, cancelled, eop_tender_id)
 SELECT
   't:' || t.unp,
   t.unp,
@@ -108,7 +108,8 @@ SELECT
   t.social,
   t.innovation,
   t.eauction,
-  t.cancelled
+  t.cancelled,
+  NULLIF(t.tender_id, '')                 -- raw EOP numeric tenderId from the header row
 FROM raw_egov_tenders t
 WHERE t.lot_id IS NULL
   AND EXISTS (SELECT 1 FROM authorities a WHERE a.id = 'auth:' || t.authority_eik);
@@ -116,27 +117,101 @@ WHERE t.lot_id IS NULL
 -- 2b) Synthetic tenders — УНП that appear only in contracts (no tenders-export row), so
 --     every contract has a parent. Procedure type is unknown ('неизвестна'); subject/CPV/
 --     estimated are taken from the contract line.
-INSERT OR IGNORE INTO tenders
+WITH folded AS (
+  SELECT
+    c.unp,
+    MIN(c.procurement_subject) AS raw_title,
+    'auth:' || MIN(c.authority_eik) AS authority_id,
+    MIN(c.cpv_code) AS cpv_code,
+    MIN(c.estimated_value) AS estimated_value,
+    MIN(c.currency) AS raw_currency,
+    MIN(c.contract_kind) AS contract_kind,
+    MIN(c.legal_basis) AS legal_basis,
+    MIN(c.award_criteria) AS award_criteria,
+    MIN(NULLIF(c.tender_ext_id, '')) AS eop_tender_id  -- synthetic tenders inherit the EOP id from contracts
+  FROM raw_egov_contracts c
+  WHERE 1 = 1
+    AND c.unp IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM raw_egov_tenders t WHERE t.unp = c.unp)
+    AND EXISTS (SELECT 1 FROM authorities a WHERE a.id = 'auth:' || c.authority_eik)
+  GROUP BY c.unp
+)
+INSERT INTO tenders
   (id, source_id, title, authority_id, cpv_code, estimated_value, currency,
-   procedure_type, contract_kind, status, legal_basis, award_criteria)
+   procedure_type, contract_kind, status, legal_basis, award_criteria, eop_tender_id)
 SELECT
-  't:' || c.unp,
-  c.unp,
-  COALESCE(MIN(c.procurement_subject), '(без предмет)'),
-  'auth:' || MIN(c.authority_eik),
-  MIN(c.cpv_code),
-  MIN(c.estimated_value),
-  COALESCE(MIN(c.currency), 'BGN'),
+  't:' || unp,
+  unp,
+  COALESCE(raw_title, '(без предмет)'),
+  authority_id,
+  cpv_code,
+  estimated_value,
+  COALESCE(raw_currency, 'BGN'),
   'неизвестна',
-  MIN(c.contract_kind),
+  contract_kind,
   'awarded',
-  MIN(c.legal_basis),
-  MIN(c.award_criteria)
-FROM raw_egov_contracts c
-WHERE c.unp IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM raw_egov_tenders t WHERE t.unp = c.unp)
-  AND EXISTS (SELECT 1 FROM authorities a WHERE a.id = 'auth:' || c.authority_eik)
-GROUP BY c.unp;
+  legal_basis,
+  award_criteria,
+  eop_tender_id
+FROM folded
+WHERE true
+ON CONFLICT(id) DO UPDATE SET
+  title = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.title = '(без предмет)' THEN tenders.title
+      WHEN tenders.title = '(без предмет)' THEN excluded.title
+      ELSE min(tenders.title, excluded.title)
+    END
+    ELSE tenders.title END,
+  cpv_code = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.cpv_code IS NULL THEN tenders.cpv_code
+      WHEN tenders.cpv_code IS NULL THEN excluded.cpv_code
+      ELSE min(tenders.cpv_code, excluded.cpv_code)
+    END
+    ELSE tenders.cpv_code END,
+  estimated_value = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.estimated_value IS NULL THEN tenders.estimated_value
+      WHEN tenders.estimated_value IS NULL THEN excluded.estimated_value
+      ELSE min(tenders.estimated_value, excluded.estimated_value)
+    END
+    ELSE tenders.estimated_value END,
+  currency = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.currency = 'BGN' AND tenders.currency <> 'BGN' THEN tenders.currency
+      WHEN tenders.currency = 'BGN' AND excluded.currency <> 'BGN' THEN excluded.currency
+      ELSE min(tenders.currency, excluded.currency)
+    END
+    ELSE tenders.currency END,
+  contract_kind = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.contract_kind IS NULL THEN tenders.contract_kind
+      WHEN tenders.contract_kind IS NULL THEN excluded.contract_kind
+      ELSE min(tenders.contract_kind, excluded.contract_kind)
+    END
+    ELSE tenders.contract_kind END,
+  legal_basis = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.legal_basis IS NULL THEN tenders.legal_basis
+      WHEN tenders.legal_basis IS NULL THEN excluded.legal_basis
+      ELSE min(tenders.legal_basis, excluded.legal_basis)
+    END
+    ELSE tenders.legal_basis END,
+  award_criteria = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.award_criteria IS NULL THEN tenders.award_criteria
+      WHEN tenders.award_criteria IS NULL THEN excluded.award_criteria
+      ELSE min(tenders.award_criteria, excluded.award_criteria)
+    END
+    ELSE tenders.award_criteria END,
+  eop_tender_id = CASE WHEN tenders.procedure_type = 'неизвестна' THEN
+    CASE
+      WHEN excluded.eop_tender_id IS NULL THEN tenders.eop_tender_id
+      WHEN tenders.eop_tender_id IS NULL THEN excluded.eop_tender_id
+      ELSE min(tenders.eop_tender_id, excluded.eop_tender_id)
+    END
+    ELSE tenders.eop_tender_id END;
 
 -- 3) Lots — the lot rows of each procurement (lot_id IS NOT NULL), linked to their tender.
 -- Canonical lot id is `lot:UNP:N` with N the integer lot number. The two feeds disagree on the raw
@@ -229,8 +304,10 @@ INSERT OR IGNORE INTO contracts
    eauction, framework, accelerated, strategic)
 SELECT
   CASE
-    WHEN x.source LIKE 'eop:%' THEN 'c:e:' || x.id
-    WHEN x.source LIKE 'ocds:%' THEN 'c:o:' || x.id
+    WHEN x.source LIKE 'eop:%' THEN 'c:e:' || COALESCE(x.unp, '') || ':' || COALESCE(x.contract_number, '') || ':' ||
+      COALESCE(NULLIF(x.lot_norm, ''), '_') || ':' || x.bidder_key || ':' || x.contract_ordinal
+    WHEN x.source LIKE 'ocds:%' THEN 'c:o:' || COALESCE(x.unp, '') || ':' || COALESCE(x.contract_number, '') || ':' ||
+      COALESCE(NULLIF(x.lot_id, ''), '_') || ':' || x.bidder_key || ':' || x.contract_ordinal
     ELSE 'c:' || x.id
   END,
   't:' || x.unp,
@@ -302,40 +379,57 @@ FROM (
       )
       ELSE NULL END AS fx_rate
   FROM (
-    SELECT c.*,
-      CASE
-        WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
-        WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
-        WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
-        ELSE 'ok'
-      END AS value_flag,
-      CASE
-        WHEN TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END) NOT GLOB '*[^0-9]*'
-         AND LENGTH(TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)) IN (9, 13)
-        THEN 'eik:' || TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)
-        WHEN c.contractor_name IS NOT NULL AND TRIM(c.contractor_name) <> '' THEN 'name:' || UPPER(TRIM(REPLACE(REPLACE(c.contractor_name, '  ', ' '), '  ', ' ')))
-        ELSE NULL
-      END AS bidder_key
-    FROM raw_egov_contracts c
-    -- EOP always; an OCDS row only when no EOP row shares its contract_number - EOP wins.
-    -- Key is contract_number (the public-procurement contract document number, common to both feeds), NOT unp:
-    -- OCDS stores its ocid in unp, which never matches the EOP UNP format. (idx_egov_cnum)
-    -- EOP daily open-data buckets are CUMULATIVE: the same contract recurs across consecutive days,
-    -- so keep exactly ONE row per logical contract (unp+contract_number+lot+contractor), choosing the
-    -- latest source-day (then highest id). Without this, contracts and every EUR total double-count.
-    -- The NOT EXISTS leads with contract_number so idx_egov_cnum/idx_egov_unp_cnum keep it cheap.
-    WHERE (c.source LIKE 'eop:%' AND NOT EXISTS (
-            SELECT 1 FROM raw_egov_contracts a
-            WHERE a.source LIKE 'eop:%'
-              AND a.contract_number = c.contract_number
-              AND COALESCE(a.unp, '') = COALESCE(c.unp, '')
-              AND COALESCE(a.lot_id, '') = COALESCE(c.lot_id, '')
-              AND COALESCE(a.contractor_eik, '') = COALESCE(c.contractor_eik, '')
-              AND COALESCE(a.contractor_name, '') = COALESCE(c.contractor_name, '')
-              AND (a.source > c.source OR (a.source = c.source AND a.id > c.id))))
-       OR (c.source LIKE 'ocds:%' AND c.contract_number IS NOT NULL AND NOT EXISTS (
-            SELECT 1 FROM raw_egov_contracts a
-            WHERE a.source LIKE 'eop:%' AND a.contract_number = c.contract_number))
+    SELECT z.*,
+      ROW_NUMBER() OVER (
+        PARTITION BY z.unp, COALESCE(z.contract_number, ''), z.bidder_key,
+          CASE
+            WHEN z.source LIKE 'eop:%' THEN COALESCE(NULLIF(z.lot_norm, ''), '_')
+            ELSE COALESCE(NULLIF(z.lot_id, ''), '_')
+          END
+        ORDER BY z.signing_value, z.contract_date, z.document_number, z.id
+      ) AS contract_ordinal
+    FROM (
+      SELECT c.*,
+        CASE
+          WHEN c.lot_id LIKE 'LOT-%' AND REPLACE(c.lot_id, 'LOT-', '') <> '' AND REPLACE(c.lot_id, 'LOT-', '') NOT GLOB '*[^0-9]*' THEN CAST(REPLACE(c.lot_id, 'LOT-', '') AS INTEGER)
+          WHEN c.lot_id <> '' AND c.lot_id NOT GLOB '*[^0-9]*' THEN CAST(c.lot_id AS INTEGER)
+          ELSE c.lot_id
+        END AS lot_norm,
+        CASE
+          WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
+          WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
+          WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
+          ELSE 'ok'
+        END AS value_flag,
+        CASE
+          WHEN TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END) NOT GLOB '*[^0-9]*'
+           AND LENGTH(TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)) IN (9, 13)
+          THEN 'eik:' || TRIM(CASE WHEN c.contractor_eik LIKE 'ЕИК %' THEN SUBSTR(c.contractor_eik, 5) ELSE c.contractor_eik END)
+          WHEN c.contractor_name IS NOT NULL AND TRIM(c.contractor_name) <> '' THEN 'name:' || UPPER(TRIM(REPLACE(REPLACE(c.contractor_name, '  ', ' '), '  ', ' ')))
+          ELSE NULL
+        END AS bidder_key
+      FROM raw_egov_contracts c
+      -- EOP always; an OCDS row only when no EOP row shares its contract_number - EOP wins.
+      -- Key is contract_number (the public-procurement contract document number, common to both feeds), NOT unp:
+      -- OCDS stores its ocid in unp, which never matches the EOP UNP format. (idx_egov_cnum)
+      -- EOP daily open-data buckets are CUMULATIVE: the same contract recurs across consecutive days,
+      -- so keep exactly ONE row per logical contract (unp+contract_number+lot+contractor), choosing the
+      -- latest source-day (then highest id). Without this, contracts and every EUR total double-count.
+      -- The NOT EXISTS leads with contract_number so idx_egov_cnum/idx_egov_unp_cnum keep it cheap.
+      WHERE (c.source LIKE 'eop:%' AND NOT EXISTS (
+              SELECT 1 FROM raw_egov_contracts a
+              WHERE a.source LIKE 'eop:%'
+                AND COALESCE(a.contract_number, '') = COALESCE(c.contract_number, '')
+                AND COALESCE(a.unp, '') = COALESCE(c.unp, '')
+                AND COALESCE(a.lot_id, '') = COALESCE(c.lot_id, '')
+                AND COALESCE(a.contractor_eik, '') = COALESCE(c.contractor_eik, '')
+                AND COALESCE(a.contractor_name, '') = COALESCE(c.contractor_name, '')
+                AND (a.source > c.source OR (a.source = c.source AND a.id > c.id))))
+         OR (c.source LIKE 'ocds:%' AND NOT EXISTS (
+              SELECT 1 FROM raw_egov_contracts a
+              WHERE a.source LIKE 'eop:%'
+                AND COALESCE(a.contract_number, '') = COALESCE(c.contract_number, '')))
+    ) z
   ) y
 ) x
 WHERE x.bidder_key IS NOT NULL
@@ -347,25 +441,73 @@ WHERE x.bidder_key IS NOT NULL
 -- staging candidates, so a future NOT NULL/foreign-key mismatch is visible instead of hidden by
 -- INSERT OR IGNORE.
 
--- 6) Location enrichment from OCDS parties (raw_ocds_parties, populated by scripts/load-ocds.mjs).
+-- Promote transient/work OCDS party staging into the served parties projection.
+WITH keyed AS (
+  SELECT
+    CASE
+      -- ЕИК is the stable national identity, so key by it FIRST. The OCDS (ocid, party_id) pair is
+      -- positional within a release ("ORG-0003" = the 3rd party in THIS package), and the same slot is
+      -- reused for a different company on every republish — keying on it collapses genuinely-distinct
+      -- companies onto one node, and source-DESC dedup then drops all but the latest occupant. Putting
+      -- ЕИК first prevents that collision; the (ocid, party_id) suffix keeps one row per appearance so
+      -- the per-field enrichment below can still pick the richest non-blank value across appearances.
+      WHEN NULLIF(eik, '') IS NOT NULL THEN 'eik:' || eik || ':ocid:' || COALESCE(ocid, '') || ':party:' || COALESCE(party_id, '')
+      WHEN NULLIF(ocid, '') IS NOT NULL AND NULLIF(party_id, '') IS NOT NULL THEN 'ocid:' || ocid || ':party:' || party_id
+      ELSE 'content:' ||
+        COALESCE(ocid, '') || ':' || COALESCE(party_id, '') || ':' || COALESCE(eik, '') || ':' ||
+        COALESCE(name, '') || ':' || COALESCE(street_address, '') || ':' || COALESCE(locality, '') || ':' ||
+        COALESCE(region_nuts, '') || ':' || COALESCE(contact_email, '') || ':' || COALESCE(contact_phone, '')
+    END AS party_key,
+    eik,
+    source,
+    ocid,
+    party_id,
+    name,
+    street_address,
+    locality,
+    region_nuts,
+    contact_email,
+    contact_phone
+  FROM raw_ocds_parties
+), ranked AS (
+  SELECT *,
+    ROW_NUMBER() OVER (
+      PARTITION BY party_key
+      ORDER BY source DESC, COALESCE(ocid, '') DESC, COALESCE(party_id, '') DESC,
+        COALESCE(name, '') DESC, COALESCE(street_address, '') DESC, COALESCE(locality, '') DESC,
+        COALESCE(contact_email, '') DESC, COALESCE(contact_phone, '') DESC
+    ) AS rn
+  FROM keyed
+)
+INSERT OR REPLACE INTO parties (
+  party_key, eik, source, ocid, party_id, name, street_address, locality, region_nuts,
+  contact_email, contact_phone
+)
+SELECT
+  party_key, eik, source, ocid, party_id, name, street_address, locality, region_nuts,
+  contact_email, contact_phone
+FROM ranked
+WHERE rn = 1;
+
+-- 6) Location enrichment from OCDS parties (parties, populated from raw_ocds_parties).
 --    Match on ЕИК; take the most-recent non-null value (parties repeat across releases). OCDS covers
 --    2026+ entities, so authorities/bidders absent from OCDS keep NULL location until the Trade
---    Register loader fills the rest. No-op when raw_ocds_parties is empty (admin-only import).
+--    Register loader fills the rest. No-op when parties is empty (admin-only import).
 UPDATE authorities SET
-  nuts       = COALESCE((SELECT p.region_nuts    FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.region_nuts, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), nuts),
-  settlement = COALESCE((SELECT p.locality       FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.locality, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), settlement),
-  address    = COALESCE((SELECT p.street_address FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.street_address, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), address),
-  contact_email = COALESCE((SELECT p.contact_email FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.contact_email, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_email),
-  contact_phone = COALESCE((SELECT p.contact_phone FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.contact_phone, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_phone)
-WHERE EXISTS (SELECT 1 FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat);
+  nuts       = COALESCE((SELECT p.region_nuts    FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.region_nuts, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), nuts),
+  settlement = COALESCE((SELECT p.locality       FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.locality, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), settlement),
+  address    = COALESCE((SELECT p.street_address FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.street_address, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), address),
+  contact_email = COALESCE((SELECT p.contact_email FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.contact_email, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_email),
+  contact_phone = COALESCE((SELECT p.contact_phone FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.contact_phone, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_phone)
+WHERE EXISTS (SELECT 1 FROM parties p WHERE p.eik = authorities.bulstat);
 
 UPDATE bidders SET
-  nuts       = COALESCE((SELECT p.region_nuts    FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.region_nuts, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), nuts),
-  settlement = COALESCE((SELECT p.locality       FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.locality, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), settlement),
-  address    = COALESCE((SELECT p.street_address FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.street_address, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), address),
-  contact_email = COALESCE((SELECT p.contact_email FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.contact_email, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_email),
-  contact_phone = COALESCE((SELECT p.contact_phone FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.contact_phone, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_phone)
-WHERE EXISTS (SELECT 1 FROM raw_ocds_parties p WHERE p.eik = bidders.eik_normalized);
+  nuts       = COALESCE((SELECT p.region_nuts    FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.region_nuts, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), nuts),
+  settlement = COALESCE((SELECT p.locality       FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.locality, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), settlement),
+  address    = COALESCE((SELECT p.street_address FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.street_address, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), address),
+  contact_email = COALESCE((SELECT p.contact_email FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.contact_email, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_email),
+  contact_phone = COALESCE((SELECT p.contact_phone FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.contact_phone, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_phone)
+WHERE EXISTS (SELECT 1 FROM parties p WHERE p.eik = bidders.eik_normalized);
 
 -- 6b) Per-lot value enrichment from OCDS. The bridge is OCDS tender.id -> EOP tenderId
 --     (raw_egov_tenders.tender_id) -> UNP -> domain lots. ocid is a surrogate and is never

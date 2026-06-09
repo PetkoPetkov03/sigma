@@ -104,17 +104,34 @@ invisible to the web app. `import.mjs --reset` also cleans `data/work/`.
 
 - `ship-domain.mjs` is idempotent and avoids a global empty served database, but it is still not a zero-downtime ship: each served table is briefly deleted and refilled during its own pass. The served D1 should not be read by the live web app mid-ship. Production remote deployment should use a shadow-table/swap or equivalent zero-downtime promotion.
 - Amendment IDs use a stable natural key. When `document_number`, `correction_number`, and `seq_no` are all missing, the fallback key is deterministic content (`published_at`, values, currency, description). Two genuinely distinct amendments with identical fallback content are intentionally indistinguishable in this phase.
-- Live refresh and full normalize currently assign different surrogate contract IDs. The live slice
-  uses a composite natural key (`c:e:<unp>:<contract_number>:<lot>:<bidder>:<ordinal>`), while the
-  full normalize still uses the staging rowid. Convergence is therefore measured on contract content,
-  not on the surrogate `id`; contract content (`amount`, `value_flag`, `amount_eur`, FX fields) is
-  byte-identical and `SUM(amount_eur)` matches to the cent. Recommended follow-up: move both paths to
-  the composite key, which also removes the pre-existing rowid instability across rebuilds.
-- Synthetic `neizvestna` tenders without a real procurement notice derive placeholder
-  `cpv_code`/`estimated_value` from contracts. The live slice can only aggregate the refreshed
-  window, while full backfill aggregates the full corpus, so a small number of placeholder tenders can
-  differ until the next full re-base. This is accepted as low blast radius and eventual-consistent for
-  this phase.
-- Entities born in a live window whose best contact or enrichment-bearing OCDS party falls outside
-  that window can stay unenriched until the next full re-base. The live slice only sees transient
-  parties for the refreshed window; full backfill sees the whole corpus and reconciles these fields.
+- **(Resolved — R1)** Both paths now assign the same composite contract surrogate
+  `c:e:<unp>:<contract_number>:<lot>:<bidder>:<ordinal>` (base feed) / `c:o:...` (OCDS-only feed), so
+  convergence holds on the surrogate `id` itself, not just content. The production-flow harness
+  (full-backfill-to-T vs early-backfill + live-refresh-of-strictly-new-days) reports a strict contract
+  id-set diff of `0/0`, full-row diff `0/0`, and `SUM(amount_eur)` matching to the cent. This also
+  removed the pre-existing rowid instability across rebuilds.
+- **(Resolved — R2)** Synthetic `neizvestna` tenders (no real procurement notice) derive their
+  placeholder `cpv_code`/`estimated_value` via a monotone, order-independent fold over the contracts
+  that reference them, so the live-window aggregate and the full-corpus aggregate converge. The
+  harness reports `tenders` full-row diff `0/0`.
+- **(Resolved — party-key collision)** The OCDS `(ocid, party_id)` pair is *positional within a
+  release* — e.g. `ORG-0003` means "the 3rd party in THIS package" and the slot is reused for a
+  different company on every republish. The earlier projection keyed `parties` on
+  `ocid:<ocid>:party:<party_id>` and deduped source-DESC, so the latest republish's occupant won and
+  every other genuinely-distinct company in that slot was silently dropped (one busy supplier slot
+  held 10 distinct EIKs; 9 were lost). That both lost real source master-data and made enrichment
+  window-dependent. The key now leads with ЕИК (`eik:<eik>:ocid:<ocid>:party:<party_id>`), so distinct
+  companies never collide and the per-field enrichment still picks the richest non-blank value across
+  a company's appearances. The harness reports `bidders` full-row diff `0/0`.
+- Entities born in a live window whose richest enrichment-bearing OCDS appearance falls *entirely*
+  outside that window can still lag until the next full re-base (the live slice only sees transient
+  parties for the refreshed window). This is now a narrow, eventual-consistent residual rather than a
+  hard data loss; it did not manifest in the validated window (full-domain convergence `0/0`).
+- The served `tenders` row carries the raw EOP numeric `tenderId` (`eop_tender_id`, migration
+  `0003_tender_eop_id.sql`) so the contract page can deep-link the public documents page at
+  `https://app.eop.bg/today/<eop_tender_id>`. This is the portal's own key — NOT the УНП and NOT the
+  contract `document_number` (noticeId). Real tenders take it from the header row
+  (`raw_egov_tenders.tender_id`, 100 % populated); synthetic `неизвестна` tenders fold it from the
+  contract feed (`MIN(raw_egov_contracts.tender_ext_id)`), which is present on ~50 % of contracts —
+  where absent, no documents link is shown. The id is stored verbatim and converges `0/0`
+  (full backfill vs early + live-refresh).

@@ -18,6 +18,7 @@ const TABLES = [
   'risk_scores',
   'bidder_members',
   'amendments',
+  'parties',
   'fx_rates',
   'nuts_regions',
   'data_freshness',
