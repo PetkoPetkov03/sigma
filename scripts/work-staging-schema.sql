@@ -224,7 +224,8 @@ CREATE TABLE raw_ocds_parties (
 );
 
 -- OCDS award suppliers — every supplier on every award (supplier_count > 1 = joint venture /
--- consortium, the member breakdown OCDS exposes). Captured by scripts/load-ocds.mjs. Source 'ocds:%'.
+-- consortium, the member breakdown OCDS exposes). Captured by scripts/load-eop.mjs. Source 'ocds:%'.
+-- Staged but not yet consumed by normalize (wired-but-unused; see cleanup-plan.md section 7).
 CREATE TABLE raw_ocds_award_suppliers (
   id             INTEGER PRIMARY KEY,
   source         TEXT NOT NULL,
@@ -254,28 +255,6 @@ CREATE TABLE raw_ocds_lots (
   value_currency TEXT
 );
 
--- Trade Register (Агенция по вписванията) — daily XML deltas, by
--- scripts/load-tr.mjs. One company row per <Deed> (current state).
--- Source 'tr:<file date>'; latest file_date wins on dedup. Personal IDs are hashed at source.
-CREATE TABLE raw_tr_companies (
-  id            INTEGER PRIMARY KEY,
-  source        TEXT NOT NULL,
-  fetched_at    TEXT NOT NULL,
-  file_date     TEXT,                        -- date of the daily file (latest wins)
-  deed_guid     TEXT,
-  uic           TEXT,                         -- ЕИК
-  company_name  TEXT,
-  legal_form    TEXT,                         -- EOOD / OOD / AD / ET / DZZD …
-  deed_status   TEXT,
-  subject_of_activity TEXT,                   -- предмет на дейност
-  nkid          TEXT,                         -- НКИД economic-activity code
-  country       TEXT,
-  district      TEXT, district_ekatte TEXT,
-  municipality  TEXT, municipality_ekatte TEXT,
-  settlement    TEXT, settlement_ekatte TEXT,
-  post_code     TEXT, street TEXT, street_number TEXT
-);
-
 -- Work-only staging indexes.
 CREATE INDEX idx_egov_unp ON raw_egov_contracts(unp);
 CREATE INDEX idx_egov_unp_cnum ON raw_egov_contracts(unp, contract_number);
@@ -295,4 +274,3 @@ CREATE INDEX idx_ocds_award_suppliers_source ON raw_ocds_award_suppliers(source)
 CREATE INDEX idx_ocds_lots_source ON raw_ocds_lots(source);
 CREATE INDEX idx_ocds_lots_ocid_lot ON raw_ocds_lots(ocid, lot_id);
 CREATE INDEX idx_ocds_lots_tender_lot ON raw_ocds_lots(tender_id, lot_id);
-CREATE INDEX idx_tr_companies_uic ON raw_tr_companies(uic);

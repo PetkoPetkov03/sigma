@@ -547,19 +547,7 @@ FROM mapped
 WHERE mapped.rn = 1
   AND mapped.domain_lot_id = lots.id;
 
--- 7) Company master from the Trade Register (raw_tr_*, scripts/load-tr.mjs). Latest deed per ЕИК
---    wins. Enriches bidders' seat/legal_form only; owner-table rebuilds are intentionally not done
---    here while the compliance-remediation worker removes those tables and loaders.
---    No-op when raw_tr_* is empty (the open feed is daily deltas; coverage grows via the scheduled job).
-UPDATE bidders SET
-  legal_form   = COALESCE(legal_form,   (SELECT c.legal_form        FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.legal_form        IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1)),
-  settlement   = COALESCE(settlement,   (SELECT c.settlement        FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.settlement        IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1)),
-  ekatte       = COALESCE(ekatte,       (SELECT c.settlement_ekatte FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.settlement_ekatte IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1)),
-  municipality = COALESCE(municipality, (SELECT c.municipality      FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.municipality      IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1)),
-  address      = COALESCE(address,      (SELECT TRIM(COALESCE(c.street,'') || ' ' || COALESCE(c.street_number,'')) FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized AND c.street IS NOT NULL ORDER BY c.file_date DESC, c.id DESC LIMIT 1))
-WHERE EXISTS (SELECT 1 FROM raw_tr_companies c WHERE c.uic = bidders.eik_normalized);
-
--- 8) Region from NUTS (nuts_regions, seeded by scripts/load-nuts.sql) — labels the OCDS-sourced NUTS
+-- 7) Region from NUTS (nuts_regions, seeded by scripts/load-nuts.sql) — labels the OCDS-sourced NUTS
 --    codes and fills authorities.region (област) where empty. No-op if nuts_regions is unseeded.
 UPDATE authorities SET region = (SELECT n.nuts3_name FROM nuts_regions n WHERE n.nuts3 = authorities.nuts)
 WHERE authorities.nuts IS NOT NULL AND authorities.region IS NULL;

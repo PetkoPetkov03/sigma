@@ -57,14 +57,8 @@ function touchesTransientStaging(statement: string): boolean {
   return TRANSIENT_STAGING_TABLES.some((table) => statement.includes(table));
 }
 
-function isExcludedWorkTable(statement: string): boolean {
-  return statement.includes('raw_tr_companies');
-}
-
 export function transientStagingStatements(workStagingSchemaSql: string): string[] {
-  return splitSqlStatements(workStagingSchemaSql).filter(
-    (statement) => touchesTransientStaging(statement) && !isExcludedWorkTable(statement),
-  );
+  return splitSqlStatements(workStagingSchemaSql).filter((statement) => touchesTransientStaging(statement));
 }
 
 export function dropTransientStagingStatements(): string[] {

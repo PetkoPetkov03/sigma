@@ -304,13 +304,13 @@ describe('splitSqlStatements', () => {
 });
 
 describe('transient staging SQL helpers', () => {
-  it('selects served-refresh staging DDL and excludes trade-register staging', async () => {
+  it('selects only transient-staging DDL and excludes non-staging tables', async () => {
     const { transientStagingStatements, dropTransientStagingStatements } = await import('./refresh');
     const sql = `
       CREATE TABLE raw_egov_contracts (id INTEGER);
-      CREATE TABLE raw_tr_companies (id INTEGER);
+      CREATE TABLE some_other_table (id INTEGER);
       CREATE INDEX idx_egov_unp ON raw_egov_contracts(id);
-      CREATE INDEX idx_tr_companies_uic ON raw_tr_companies(id);
+      CREATE INDEX idx_other ON some_other_table(id);
       CREATE TABLE raw_ocds_lots (id INTEGER);
     `;
 
@@ -320,6 +320,6 @@ describe('transient staging SQL helpers', () => {
       'CREATE TABLE raw_ocds_lots (id INTEGER)',
     ]);
     expect(dropTransientStagingStatements()).toContain('DROP TABLE IF EXISTS raw_egov_contracts');
-    expect(dropTransientStagingStatements()).not.toContain('DROP TABLE IF EXISTS raw_tr_companies');
+    expect(dropTransientStagingStatements()).not.toContain('DROP TABLE IF EXISTS some_other_table');
   });
 });

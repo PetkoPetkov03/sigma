@@ -7,7 +7,7 @@ export interface AuthorityRow {
   region: string | null;
   type: string | null;
   type_group: string | null; // friendly bucket (heuristic from name + type)
-  // location — filled from OCDS parties / Trade Register / NSI ЕКАТТЕ
+  // location — filled from OCDS parties / NSI ЕКАТТЕ
   nuts: string | null;
   settlement: string | null;
   ekatte: string | null;
@@ -66,7 +66,7 @@ export interface BidderRow {
   eik_valid: number; // 1 if eik_normalized is a valid 9/13-digit ЕИК
   is_consortium: number; // 1 if a joint venture (multi-ЕИК field or ДЗЗД/ОБЕДИНЕНИЕ/КОНСОРЦИУМ name)
   kind: 'company' | 'consortium';
-  // company master data — filled from Trade Register / OCDS parties
+  // company master data — filled from OCDS parties
   legal_form: string | null;
   nuts: string | null;
   settlement: string | null;

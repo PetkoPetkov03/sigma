@@ -26,7 +26,7 @@ CREATE TABLE authorities (
   region     TEXT,
   type       TEXT,                        -- Вид на възложителя (ЗОП controlled vocab: Публичноправна организация / Орган на централната власт …)
   type_group TEXT,                        -- friendly bucket (министерство/община/агенция/болница/образование/държавна компания/друго) — heuristic from name + type (non-critical display)
-  -- location — filled from OCDS parties / Trade Register / NSI ЕКАТТЕ; NULL until those loaders run
+  -- location — filled from OCDS parties / NSI ЕКАТТЕ; NULL until those loaders run
   nuts         TEXT,                       -- NUTS region code (e.g. BG411 София)
   settlement   TEXT,                       -- населено място (city/town)
   ekatte       TEXT,                       -- settlement ЕКАТТЕ code
@@ -90,7 +90,7 @@ CREATE TABLE bidders (
   eik_valid      INTEGER NOT NULL DEFAULT 0,  -- 1 if eik_normalized is a valid 9/13-digit ЕИК
   is_consortium  INTEGER NOT NULL DEFAULT 0,  -- 1 if the name is a JV (ДЗЗД / ОБЕДИНЕНИЕ / КОНСОРЦИУМ / member list)
   kind           TEXT NOT NULL DEFAULT 'company',  -- 'company' | 'consortium'
-  -- company master data — filled from Trade Register / OCDS parties; NULL until those loaders run
+  -- company master data — filled from OCDS parties; NULL until those loaders run
   legal_form   TEXT,                       -- правна форма (ООД / ЕООД / АД / ЕТ / ДЗЗД …)
   nuts         TEXT,                        -- NUTS region code
   settlement   TEXT,                        -- населено място (seat)
