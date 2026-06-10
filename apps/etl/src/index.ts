@@ -1,5 +1,11 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { createTransientStaging, dropTransientStaging, runRefreshSlice } from '@sigma/ingest';
+import {
+  createTransientStaging,
+  dropTransientStaging,
+  refreshDerivedContractCount,
+  refreshSliceStatementGroups,
+  runRefreshSliceStatementGroup,
+} from '@sigma/ingest';
 import refreshSliceSql from '../../../scripts/refresh-slice.sql';
 import workStagingSchemaSql from '../../../scripts/work-staging-schema.sql';
 import { computeWorkerCatchupPlan, ingestBucketWindow, type CatchupPlan } from './eop';
@@ -103,8 +109,23 @@ export class RefreshWorkflow extends WorkflowEntrypoint<Env, RefreshParams> {
         return { ...plan, days: results.length, staged: 0, derived: 0 };
       }
 
-      derived = await step.do('derive-slice', async () =>
-        runRefreshSlice(this.env.DB, refreshSliceSql),
+      for (const group of refreshSliceStatementGroups(refreshSliceSql)) {
+        await step.do(`derive-slice:${group.name}`, async () => {
+          const startedAt = Date.now();
+          await runRefreshSliceStatementGroup(this.env.DB, group);
+          console.log(
+            JSON.stringify({
+              level: 'info',
+              event: 'etl_derive_slice_batch',
+              batch: group.name,
+              statements: group.statements.length,
+              elapsedMs: Date.now() - startedAt,
+            }),
+          );
+        });
+      }
+      derived = await step.do('derive-slice:count', async () =>
+        refreshDerivedContractCount(this.env.DB),
       );
 
       return { ...plan, days: results.length, staged, derived };

@@ -44,6 +44,43 @@ export function splitSqlStatements(sql: string): string[] {
   return statements;
 }
 
+export interface RefreshSliceStatementGroup {
+  name: string;
+  statements: string[];
+}
+
+const REFRESH_BATCH_MARKER = /^--\s*@refresh-batch\s+([a-z0-9][a-z0-9-]*)\s*$/i;
+
+/**
+ * Group refresh-slice.sql statements by `-- @refresh-batch name` markers. The markers are SQL
+ * comments, so sqlite3/.read still sees one valid script, while D1 callers can keep each group under
+ * the platform CPU budget.
+ */
+export function refreshSliceStatementGroups(refreshSliceSql: string): RefreshSliceStatementGroup[] {
+  const groups: RefreshSliceStatementGroup[] = [];
+  let currentName = 'derive-slice';
+  let currentSql = '';
+
+  const flush = () => {
+    const statements = splitSqlStatements(currentSql);
+    if (statements.length > 0) groups.push({ name: currentName, statements });
+    currentSql = '';
+  };
+
+  for (const line of refreshSliceSql.split(/\r?\n/)) {
+    const marker = line.trim().match(REFRESH_BATCH_MARKER);
+    if (marker) {
+      flush();
+      currentName = marker[1]!;
+      continue;
+    }
+    currentSql += `${line}\n`;
+  }
+  flush();
+
+  return groups.length > 0 ? groups : [{ name: currentName, statements: splitSqlStatements(refreshSliceSql) }];
+}
+
 const TRANSIENT_STAGING_TABLES = [
   'raw_egov_contracts',
   'raw_egov_tenders',
@@ -79,15 +116,27 @@ export async function dropTransientStaging(db: D1Database): Promise<void> {
   await db.batch(dropTransientStagingStatements().map((s) => db.prepare(s)));
 }
 
-/**
- * Execute the refresh-slice script as one D1 batch (transactional: all-or-nothing), then return the
- * number of refresh-derived ('c:o:%') contracts now in the domain.
- */
-export async function runRefreshSlice(db: D1Database, refreshSliceSql: string): Promise<number> {
-  const statements = splitSqlStatements(refreshSliceSql);
-  await db.batch(statements.map((s) => db.prepare(s)));
+export async function runRefreshSliceStatementGroup(
+  db: D1Database,
+  group: RefreshSliceStatementGroup,
+): Promise<void> {
+  await db.batch(group.statements.map((s) => db.prepare(s)));
+}
+
+export async function refreshDerivedContractCount(db: D1Database): Promise<number> {
   const row = await db
     .prepare("SELECT COUNT(*) AS n FROM contracts WHERE id LIKE 'c:o:%'")
     .first<{ n: number }>();
   return row?.n ?? 0;
+}
+
+/**
+ * Execute refresh-slice.sql as ordered D1 batches, then return the number of refresh-derived
+ * ('c:o:%') contracts now in the domain.
+ */
+export async function runRefreshSlice(db: D1Database, refreshSliceSql: string): Promise<number> {
+  for (const group of refreshSliceStatementGroups(refreshSliceSql)) {
+    await runRefreshSliceStatementGroup(db, group);
+  }
+  return refreshDerivedContractCount(db);
 }

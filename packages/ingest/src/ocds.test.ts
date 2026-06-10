@@ -9,7 +9,7 @@ import {
   type OcdsMeta,
   type OcdsRelease,
 } from './ocds';
-import { splitSqlStatements } from './refresh';
+import { refreshSliceStatementGroups, splitSqlStatements } from './refresh';
 
 const meta: OcdsMeta = {
   source: 'ocds:2026:2026-05-01',
@@ -294,6 +294,25 @@ describe('splitSqlStatements', () => {
   it('splits two statements on one line', () => {
     const sql = 'SELECT 1; SELECT 2;';
     expect(splitSqlStatements(sql)).toEqual(['SELECT 1', 'SELECT 2']);
+  });
+});
+
+describe('refreshSliceStatementGroups', () => {
+  it('groups statements by refresh-batch markers', () => {
+    const groups = refreshSliceStatementGroups(`
+      CREATE TABLE a (id INTEGER);
+      -- @refresh-batch second
+      INSERT INTO a VALUES (1);
+      INSERT INTO a VALUES (2);
+      -- @refresh-batch third
+      DELETE FROM a;
+    `);
+
+    expect(groups).toEqual([
+      { name: 'derive-slice', statements: ['CREATE TABLE a (id INTEGER)'] },
+      { name: 'second', statements: ['INSERT INTO a VALUES (1)', 'INSERT INTO a VALUES (2)'] },
+      { name: 'third', statements: ['DELETE FROM a'] },
+    ]);
   });
 });
 

@@ -3,10 +3,14 @@
 // both route through scripts/load-eop.mjs; only the date window and derive mode differ.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { computeCatchupWindow, daysInWindow } from '../packages/ingest/src/ocds.ts';
+import {
+  dropTransientStagingStatements,
+  refreshSliceStatementGroups,
+} from '../packages/ingest/src/refresh.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const apiDir = resolve(root, 'apps/web');
@@ -20,7 +24,7 @@ const catchup = process.argv.includes('--catchup');
 const planOnly = process.argv.includes('--plan-only') || process.argv.includes('--dry-run');
 const loc = remote ? '--remote' : '--local';
 const persistTo = arg('persist-to');
-const passthru = remote ? ['--remote'] : persistTo ? ['--persist-to', String(persistTo)] : [];
+const passthru = remote ? ['--remote'] : persistTo ? [`--persist-to=${String(persistTo)}`] : [];
 const d1Name = process.env.SIGMA_D1_NAME || 'sigma';
 
 function arg(name) {
@@ -62,7 +66,25 @@ function run(cmd, args, cwd = root, options = {}) {
 }
 
 const d1PersistArgs = !remote && persistTo ? ['--persist-to', String(persistTo)] : [];
-const execSql = (file) => run('wrangler', ['d1', 'execute', d1Name, loc, ...d1PersistArgs, '--file', file], apiDir);
+function execSql(file, label = basename(file)) {
+  const startedAt = process.hrtime.bigint();
+  run('wrangler', ['d1', 'execute', d1Name, loc, ...d1PersistArgs, '--file', file], apiDir);
+  const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+  console.log(`==> batch timing ${label}: ${elapsedMs.toFixed(1)}ms`);
+}
+
+function execSqlStatements(statements, label) {
+  const batchDirParent = resolve(root, 'data/work');
+  mkdirSync(batchDirParent, { recursive: true });
+  const batchDir = mkdtempSync(resolve(batchDirParent, 'sql-'));
+  try {
+    const file = resolve(batchDir, `${label}.sql`);
+    writeFileSync(file, `${statements.join(';\n')};\n`, 'utf8');
+    execSql(file, label);
+  } finally {
+    rmSync(batchDir, { recursive: true, force: true });
+  }
+}
 
 function d1(sql) {
   const out = execFileSync(
@@ -196,7 +218,24 @@ function runSliceDerive() {
   execSql(resolve(root, 'scripts/derive-amendments.sql'));
   run('node', ['scripts/load-fx.mjs', '--apply', ...passthru]);
   execSql(resolve(root, 'scripts/load-nuts.sql'));
-  execSql(resolve(root, 'scripts/refresh-slice.sql'));
+  runRefreshSliceBatches();
+}
+
+function runRefreshSliceBatches() {
+  const refreshSlicePath = resolve(root, 'scripts/refresh-slice.sql');
+  const groups = refreshSliceStatementGroups(readFileSync(refreshSlicePath, 'utf8'));
+  const batchDirParent = resolve(root, 'data/work');
+  mkdirSync(batchDirParent, { recursive: true });
+  const batchDir = mkdtempSync(resolve(batchDirParent, 'refresh-slice-'));
+  try {
+    for (const group of groups) {
+      const file = resolve(batchDir, `${group.name}.sql`);
+      writeFileSync(file, `${group.statements.join(';\n\n')};\n`, 'utf8');
+      execSql(file, `refresh-slice:${group.name}`);
+    }
+  } finally {
+    rmSync(batchDir, { recursive: true, force: true });
+  }
 }
 
 function runWorkBackfill() {
@@ -274,6 +313,7 @@ if (arg('work-db') !== undefined) {
 
 console.log(`==> Sigma import (${remote ? 'REMOTE' : 'local'})`);
 run('wrangler', ['d1', 'migrations', 'apply', d1Name, loc, ...d1PersistArgs], apiDir);
+execSqlStatements(dropTransientStagingStatements(), 'drop-stale-transient-staging');
 execSql(resolve(root, 'scripts/work-staging-schema.sql'));
 
 let deriveMode = String(arg('derive') || 'full');
@@ -291,5 +331,6 @@ validateDeriveMode(deriveMode);
 run('node', ['scripts/load-eop.mjs', '--apply', ...loadFlags, ...passthru]);
 if (deriveMode === 'slice') runSliceDerive();
 else runFullDerive();
+execSqlStatements(dropTransientStagingStatements(), 'drop-transient-staging');
 
 console.log('\n==> import complete.');

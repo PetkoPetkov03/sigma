@@ -8,9 +8,19 @@
 -- same window yields the same domain rows. Mirrors normalize-egov.sql steps 1/2b/4/5 plus
 -- precompute.sql, scoped.
 
+-- @refresh-batch setup
 -- The base-wins dedup probes contracts by АОП document number — index it (no-op if already present).
 CREATE INDEX IF NOT EXISTS idx_contracts_cnum ON contracts(contract_number);
+CREATE INDEX IF NOT EXISTS idx_contracts_tender_id ON contracts(tender_id);
 
+DROP TABLE IF EXISTS refresh_touched_contracts;
+DROP TABLE IF EXISTS refresh_touched_bidders;
+DROP TABLE IF EXISTS refresh_touched_authorities;
+CREATE TABLE refresh_touched_contracts (id TEXT PRIMARY KEY);
+CREATE TABLE refresh_touched_bidders (bidder_id TEXT PRIMARY KEY);
+CREATE TABLE refresh_touched_authorities (authority_id TEXT PRIMARY KEY);
+
+-- @refresh-batch authorities-bidders
 -- ── 1) Authorities referenced by OCDS staging (new ones only; INSERT OR IGNORE) ────────────────────
 INSERT OR IGNORE INTO authorities (id, name, bulstat, type)
 SELECT 'auth:' || authority_eik, MIN(authority_name), authority_eik, MAX(authority_type)
@@ -67,8 +77,36 @@ FROM (
   )
 )
 WHERE bidder_key IS NOT NULL
-GROUP BY bidder_key;
+GROUP BY bidder_key
+ON CONFLICT(id) DO UPDATE SET
+  name = CASE
+    WHEN excluded.name IS NULL THEN bidders.name
+    WHEN bidders.name IS NULL THEN excluded.name
+    ELSE min(bidders.name, excluded.name)
+  END,
+  bulstat = COALESCE(bidders.bulstat, excluded.bulstat),
+  eik_normalized = COALESCE(bidders.eik_normalized, excluded.eik_normalized),
+  eik_valid = max(bidders.eik_valid, excluded.eik_valid),
+  is_consortium = max(bidders.is_consortium, excluded.is_consortium),
+  kind = CASE WHEN max(bidders.is_consortium, excluded.is_consortium) = 1 THEN 'consortium' ELSE bidders.kind END;
 
+-- @refresh-batch touch-tenders
+INSERT OR IGNORE INTO refresh_touched_contracts (id)
+SELECT c.id
+FROM raw_egov_tenders t
+JOIN contracts c ON c.tender_id = 't:' || t.unp;
+INSERT OR IGNORE INTO refresh_touched_bidders (bidder_id)
+SELECT DISTINCT c.bidder_id
+FROM contracts c
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND c.bidder_id IS NOT NULL;
+INSERT OR IGNORE INTO refresh_touched_authorities (authority_id)
+SELECT DISTINCT t.authority_id
+FROM contracts c JOIN tenders t ON t.id = c.tender_id
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND t.authority_id IS NOT NULL;
+
+-- @refresh-batch tenders
 -- EOP tender headers and lots loaded since the last full normalize.
 INSERT INTO tenders
   (id, source_id, title, authority_id, cpv_code, cpv_description, estimated_value, currency,
@@ -146,6 +184,7 @@ ON CONFLICT(id) DO UPDATE SET
     THEN COALESCE(excluded.eop_tender_id, tenders.eop_tender_id)
     ELSE COALESCE(tenders.eop_tender_id, excluded.eop_tender_id) END;
 
+-- @refresh-batch lots
 INSERT OR IGNORE INTO lots (id, tender_id, title, cpv_code, estimated_value)
 SELECT
   'lot:' || t.unp || ':' || CASE
@@ -161,6 +200,7 @@ FROM raw_egov_tenders t
 WHERE t.lot_id IS NOT NULL
   AND EXISTS (SELECT 1 FROM tenders te WHERE te.id = 't:' || t.unp);
 
+-- @refresh-batch parties
 -- Promote transient/work OCDS party staging into the served parties projection.
 WITH keyed AS (
   SELECT
@@ -209,6 +249,7 @@ SELECT
 FROM ranked
 WHERE rn = 1;
 
+-- @refresh-batch enrich-authorities
 -- Party/contact enrichment for entities touched by the refreshed staging.
 UPDATE authorities SET
   nuts       = COALESCE((SELECT p.region_nuts    FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.region_nuts, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), nuts),
@@ -218,6 +259,7 @@ UPDATE authorities SET
   contact_phone = COALESCE((SELECT p.contact_phone FROM parties p WHERE p.eik = authorities.bulstat AND NULLIF(p.contact_phone, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_phone)
 WHERE EXISTS (SELECT 1 FROM parties p WHERE p.eik = authorities.bulstat);
 
+-- @refresh-batch enrich-bidders
 UPDATE bidders SET
   nuts       = COALESCE((SELECT p.region_nuts    FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.region_nuts, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), nuts),
   settlement = COALESCE((SELECT p.locality       FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.locality, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), settlement),
@@ -226,16 +268,24 @@ UPDATE bidders SET
   contact_phone = COALESCE((SELECT p.contact_phone FROM parties p WHERE p.eik = bidders.eik_normalized AND NULLIF(p.contact_phone, '') IS NOT NULL ORDER BY p.source DESC, COALESCE(p.ocid, '') DESC, COALESCE(p.party_id, '') DESC, COALESCE(p.name, '') DESC, COALESCE(p.street_address, '') DESC, COALESCE(p.locality, '') DESC, COALESCE(p.contact_email, '') DESC, COALESCE(p.contact_phone, '') DESC LIMIT 1), contact_phone)
 WHERE EXISTS (SELECT 1 FROM parties p WHERE p.eik = bidders.eik_normalized);
 
-UPDATE authorities
-SET region = (SELECT n.nuts3_name FROM nuts_regions n WHERE n.nuts3 = authorities.nuts)
-WHERE authorities.nuts IS NOT NULL
-  AND EXISTS (SELECT 1 FROM nuts_regions n WHERE n.nuts3 = authorities.nuts)
-  AND (
-    EXISTS (SELECT 1 FROM raw_ocds_parties p WHERE p.eik = authorities.bulstat)
-    OR EXISTS (SELECT 1 FROM raw_egov_contracts c WHERE c.authority_eik = authorities.bulstat)
-    OR EXISTS (SELECT 1 FROM raw_egov_tenders t WHERE t.authority_eik = authorities.bulstat)
+-- @refresh-batch touch-entities
+INSERT OR IGNORE INTO refresh_touched_authorities (authority_id)
+SELECT a.id
+FROM authorities a
+WHERE a.bulstat IN (
+    SELECT authority_eik FROM raw_egov_contracts WHERE authority_eik IS NOT NULL
+    UNION
+    SELECT authority_eik FROM raw_egov_tenders WHERE authority_eik IS NOT NULL
+    UNION
+    SELECT eik FROM raw_ocds_parties WHERE eik IS NOT NULL
   );
 
+-- @refresh-batch authority-region
+UPDATE authorities
+SET region = (SELECT n.nuts3_name FROM nuts_regions n WHERE n.nuts3 = authorities.nuts)
+WHERE id IN (SELECT authority_id FROM refresh_touched_authorities);
+
+-- @refresh-batch lot-values
 CREATE INDEX IF NOT EXISTS idx_egov_tenders_tender_id ON raw_egov_tenders(tender_id);
 WITH mapped AS (
   SELECT
@@ -268,6 +318,7 @@ FROM mapped
 WHERE mapped.rn = 1
   AND mapped.domain_lot_id = lots.id;
 
+-- @refresh-batch synthetic-tenders
 -- ── 3) Synthetic 'неизвестна' tenders for OCDS УНП (ocid) — matches normalize step 2b ───────────────
 WITH folded AS (
   SELECT
@@ -366,18 +417,74 @@ ON CONFLICT(id) DO UPDATE SET
     ELSE tenders.eop_tender_id END;
 
 -- 4) Contracts - replace rows represented by the transient window, then re-derive deltas.
-DELETE FROM contracts
-WHERE id GLOB 'c:[eo]:*'
-  AND EXISTS (
-    SELECT 1
-    FROM raw_egov_contracts r
-    WHERE COALESCE(r.contract_number, '') = COALESCE(contracts.contract_number, '')
-      AND 't:' || r.unp = contracts.tender_id
-      AND (
-        (contracts.id LIKE 'c:e:%' AND r.source LIKE 'eop:%')
-        OR (contracts.id LIKE 'c:o:%' AND r.source LIKE 'ocds:%')
-      )
+-- @refresh-batch contracts
+INSERT OR IGNORE INTO refresh_touched_contracts (id)
+SELECT DISTINCT c.id
+FROM raw_egov_contracts r
+JOIN contracts c ON c.contract_number = r.contract_number AND c.tender_id = 't:' || r.unp
+WHERE r.contract_number IS NOT NULL
+  AND c.id GLOB 'c:[eo]:*'
+  AND (
+    (c.id LIKE 'c:e:%' AND r.source LIKE 'eop:%')
+    OR (c.id LIKE 'c:o:%' AND r.source LIKE 'ocds:%')
+  )
+UNION
+SELECT DISTINCT c.id
+FROM raw_egov_contracts r
+JOIN contracts c ON c.contract_number IS NULL AND c.tender_id = 't:' || r.unp
+WHERE r.contract_number IS NULL
+  AND c.id GLOB 'c:[eo]:*'
+  AND (
+    (c.id LIKE 'c:e:%' AND r.source LIKE 'eop:%')
+    OR (c.id LIKE 'c:o:%' AND r.source LIKE 'ocds:%')
   );
+INSERT OR IGNORE INTO refresh_touched_contracts (id)
+SELECT DISTINCT c.id
+FROM raw_egov_contracts e
+JOIN contracts c ON c.contract_number = e.contract_number
+WHERE e.source LIKE 'eop:%'
+  AND e.contract_number IS NOT NULL
+  AND c.id GLOB 'c:o:*'
+UNION
+SELECT DISTINCT c.id
+FROM raw_egov_contracts e
+JOIN contracts c ON c.contract_number IS NULL
+WHERE e.source LIKE 'eop:%'
+  AND e.contract_number IS NULL
+  AND c.id GLOB 'c:o:*';
+INSERT OR IGNORE INTO refresh_touched_bidders (bidder_id)
+SELECT DISTINCT c.bidder_id
+FROM contracts c
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND c.bidder_id IS NOT NULL;
+INSERT OR IGNORE INTO refresh_touched_authorities (authority_id)
+SELECT DISTINCT t.authority_id
+FROM contracts c JOIN tenders t ON t.id = c.tender_id
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND t.authority_id IS NOT NULL;
+
+DELETE FROM contracts
+WHERE id IN (
+  SELECT DISTINCT c.id
+  FROM raw_egov_contracts r
+  JOIN contracts c ON c.contract_number = r.contract_number AND c.tender_id = 't:' || r.unp
+  WHERE r.contract_number IS NOT NULL
+    AND c.id GLOB 'c:[eo]:*'
+    AND (
+      (c.id LIKE 'c:e:%' AND r.source LIKE 'eop:%')
+      OR (c.id LIKE 'c:o:%' AND r.source LIKE 'ocds:%')
+    )
+  UNION
+  SELECT DISTINCT c.id
+  FROM raw_egov_contracts r
+  JOIN contracts c ON c.contract_number IS NULL AND c.tender_id = 't:' || r.unp
+  WHERE r.contract_number IS NULL
+    AND c.id GLOB 'c:[eo]:*'
+    AND (
+      (c.id LIKE 'c:e:%' AND r.source LIKE 'eop:%')
+      OR (c.id LIKE 'c:o:%' AND r.source LIKE 'ocds:%')
+    )
+);
 INSERT OR IGNORE INTO contracts
   (id, tender_id, bidder_id, amount, currency, signed_at, contract_number, signing_value, current_value,
    annex_count, eu_funded, bids_received, contract_kind, awarded_to_group, value_flag, amount_eur,
@@ -515,12 +622,21 @@ WHERE x.bidder_key IS NOT NULL
 -- EOP base rows loaded after the last full normalize. This mirrors normalize-egov.sql's EOP branch:
 -- newest cumulative bucket wins, existing full-normalize rows win over refresh rows.
 DELETE FROM contracts
-WHERE id GLOB 'c:o:*'
-  AND EXISTS (
-    SELECT 1 FROM raw_egov_contracts e
-    WHERE e.source LIKE 'eop:%'
-      AND COALESCE(e.contract_number, '') = COALESCE(contracts.contract_number, '')
-  );
+WHERE id IN (
+  SELECT DISTINCT c.id
+  FROM raw_egov_contracts e
+  JOIN contracts c ON c.contract_number = e.contract_number
+  WHERE e.source LIKE 'eop:%'
+    AND e.contract_number IS NOT NULL
+    AND c.id GLOB 'c:o:*'
+  UNION
+  SELECT DISTINCT c.id
+  FROM raw_egov_contracts e
+  JOIN contracts c ON c.contract_number IS NULL
+  WHERE e.source LIKE 'eop:%'
+    AND e.contract_number IS NULL
+    AND c.id GLOB 'c:o:*'
+);
 
 INSERT OR IGNORE INTO contracts
   (id, tender_id, bidder_id, amount, currency, signed_at, contract_number, signing_value, current_value,
@@ -670,8 +786,14 @@ WHERE x.bidder_key IS NOT NULL
       AND c2.bidder_id = x.bidder_key
   );
 
+UPDATE tenders
+SET status = 'awarded'
+WHERE status <> 'awarded'
+  AND EXISTS (SELECT 1 FROM raw_egov_contracts c WHERE 't:' || c.unp = tenders.id);
+
 
 -- 5) Promote window amendments into served domain history and roll touched contracts.
+-- @refresh-batch amendments
 INSERT OR REPLACE INTO amendments (
   id, natural_key, contract_number, unp, value_before, value_after, value_delta, currency,
   published_at, document_number, description, source
@@ -839,63 +961,131 @@ SET
 FROM recalculated
 WHERE recalculated.id = contracts.id;
 
--- 6) Refresh rollups + FTS for the AFFECTED entities only, then the small globals
--- Affected = entities involved in refresh-derived ('c:e:%'/'c:o:%') contracts. The two affected-sets are
--- inlined as subqueries (not TEMP tables) so the whole script runs as one D1 .batch() transaction.
-DELETE FROM company_totals WHERE bidder_id IN (SELECT DISTINCT bidder_id FROM contracts WHERE id GLOB 'c:[eo]:*');
+INSERT OR IGNORE INTO refresh_touched_contracts (id)
+SELECT DISTINCT c.id
+FROM raw_egov_contracts rc
+JOIN contracts c ON c.contract_number = rc.contract_number AND c.tender_id = 't:' || rc.unp
+WHERE rc.contract_number IS NOT NULL
+  AND c.id GLOB 'c:[eo]:*'
+UNION
+SELECT DISTINCT c.id
+FROM raw_egov_contracts rc
+JOIN contracts c ON c.contract_number IS NULL AND c.tender_id = 't:' || rc.unp
+WHERE rc.contract_number IS NULL
+  AND c.id GLOB 'c:[eo]:*'
+UNION
+SELECT DISTINCT c.id
+FROM raw_egov_amendments ra
+JOIN contracts c ON c.contract_number = ra.contract_number AND c.tender_id = 't:' || ra.unp
+WHERE ra.contract_number IS NOT NULL
+UNION
+SELECT DISTINCT c.id
+FROM raw_egov_amendments ra
+JOIN contracts c ON c.contract_number IS NULL AND c.tender_id = 't:' || ra.unp
+WHERE ra.contract_number IS NULL;
+INSERT OR IGNORE INTO refresh_touched_bidders (bidder_id)
+SELECT DISTINCT c.bidder_id
+FROM contracts c
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND c.bidder_id IS NOT NULL;
+INSERT OR IGNORE INTO refresh_touched_authorities (authority_id)
+SELECT DISTINCT t.authority_id
+FROM contracts c JOIN tenders t ON t.id = c.tender_id
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND t.authority_id IS NOT NULL;
+INSERT OR IGNORE INTO refresh_touched_authorities (authority_id)
+SELECT a.id
+FROM authorities a
+WHERE a.bulstat IN (
+    SELECT authority_eik FROM raw_egov_contracts WHERE authority_eik IS NOT NULL
+    UNION
+    SELECT authority_eik FROM raw_egov_tenders WHERE authority_eik IS NOT NULL
+    UNION
+    SELECT eik FROM raw_ocds_parties WHERE eik IS NOT NULL
+  );
+INSERT OR IGNORE INTO refresh_touched_bidders (bidder_id)
+SELECT b.id
+FROM bidders b
+WHERE b.eik_normalized IN (SELECT eik FROM raw_ocds_parties WHERE eik IS NOT NULL)
+  OR b.id IN (
+    SELECT bidder_key
+    FROM (
+      SELECT contractor_name, eik_clean,
+        CASE
+          WHEN eik_clean NOT GLOB '*[^0-9]*' AND LENGTH(eik_clean) IN (9, 13) THEN 'eik:' || eik_clean
+          WHEN contractor_name IS NOT NULL AND TRIM(contractor_name) <> '' THEN 'name:' || UPPER(TRIM(REPLACE(REPLACE(contractor_name, '  ', ' '), '  ', ' ')))
+          ELSE NULL
+        END AS bidder_key
+      FROM (
+        SELECT contractor_name,
+          TRIM(CASE WHEN contractor_eik LIKE 'ЕИК %' THEN SUBSTR(contractor_eik, 5) ELSE contractor_eik END) AS eik_clean
+        FROM raw_egov_contracts WHERE source LIKE 'eop:%' OR source LIKE 'ocds:%'
+      )
+    )
+    WHERE bidder_key IS NOT NULL
+  );
+
+-- 6) Refresh rollups + FTS. Only the D1-hot rollups are scoped to touched rows; cheaper rollups stay
+-- full-recomputed in isolated batches so convergence stays simple.
+-- @refresh-batch company-totals
+DELETE FROM company_totals WHERE bidder_id IN (SELECT bidder_id FROM refresh_touched_bidders);
 INSERT INTO company_totals (bidder_id, name, kind, eik, eik_valid, settlement, won_eur, contracts, authorities, eu_eur, first_date, last_date)
 SELECT b.id, b.name, b.kind, b.eik_normalized, b.eik_valid, b.settlement,
   SUM(c.amount_eur), COUNT(*), COUNT(DISTINCT t.authority_id),
   SUM(CASE WHEN c.eu_funded = 1 THEN c.amount_eur ELSE 0 END), MIN(c.signed_at), MAX(c.signed_at)
 FROM contracts c JOIN bidders b ON b.id = c.bidder_id JOIN tenders t ON t.id = c.tender_id
-WHERE c.amount_eur IS NOT NULL AND c.bidder_id IN (SELECT DISTINCT bidder_id FROM contracts WHERE id GLOB 'c:[eo]:*')
+WHERE c.amount_eur IS NOT NULL AND c.bidder_id IN (SELECT bidder_id FROM refresh_touched_bidders)
 GROUP BY b.id;
 UPDATE company_totals SET primary_sector = (
   SELECT substr(t.cpv_code, 1, 2) FROM contracts c JOIN tenders t ON t.id = c.tender_id
   WHERE c.bidder_id = company_totals.bidder_id AND c.amount_eur IS NOT NULL AND COALESCE(t.cpv_code,'') <> ''
   GROUP BY substr(t.cpv_code, 1, 2) ORDER BY SUM(c.amount_eur) DESC, substr(t.cpv_code, 1, 2) LIMIT 1)
-WHERE bidder_id IN (SELECT DISTINCT bidder_id FROM contracts WHERE id GLOB 'c:[eo]:*');
+WHERE bidder_id IN (SELECT bidder_id FROM refresh_touched_bidders);
 
-DELETE FROM authority_totals WHERE authority_id IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*');
+-- @refresh-batch authority-totals
+DELETE FROM authority_totals WHERE authority_id IN (SELECT authority_id FROM refresh_touched_authorities);
 INSERT INTO authority_totals (authority_id, name, type_group, settlement, region, spent_eur, contracts, suppliers, avg_eur, eu_eur, first_date, last_date)
 SELECT a.id, a.name, a.type_group, a.settlement, a.region,
   SUM(c.amount_eur), COUNT(*), COUNT(DISTINCT c.bidder_id), SUM(c.amount_eur) / COUNT(*),
   SUM(CASE WHEN c.eu_funded = 1 THEN c.amount_eur ELSE 0 END), MIN(c.signed_at), MAX(c.signed_at)
 FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id = t.authority_id
-WHERE c.amount_eur IS NOT NULL AND t.authority_id IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*')
+WHERE c.amount_eur IS NOT NULL AND t.authority_id IN (SELECT authority_id FROM refresh_touched_authorities)
 GROUP BY a.id;
 UPDATE authority_totals SET primary_sector = (
   SELECT substr(t.cpv_code, 1, 2) FROM contracts c JOIN tenders t ON t.id = c.tender_id
   WHERE t.authority_id = authority_totals.authority_id AND c.amount_eur IS NOT NULL AND COALESCE(t.cpv_code,'') <> ''
   GROUP BY substr(t.cpv_code, 1, 2) ORDER BY SUM(c.amount_eur) DESC, substr(t.cpv_code, 1, 2) LIMIT 1)
-WHERE authority_id IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*');
+WHERE authority_id IN (SELECT authority_id FROM refresh_touched_authorities);
 
--- flow_pairs for affected authorities (rebuild every pair of an affected authority — bounded)
-DELETE FROM flow_pairs WHERE authority_id IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*');
+-- @refresh-batch flow-pairs
+DELETE FROM flow_pairs;
 INSERT INTO flow_pairs (authority_id, bidder_id, authority_name, bidder_name, bidder_kind, won_eur, contracts)
 SELECT t.authority_id, c.bidder_id, a.name, b.name, b.kind, SUM(c.amount_eur), COUNT(*)
 FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
-WHERE c.amount_eur IS NOT NULL AND t.authority_id IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*')
+WHERE c.amount_eur IS NOT NULL
 GROUP BY t.authority_id, c.bidder_id;
 
--- search_index rows for affected entities (companies + authorities)
-DELETE FROM search_index WHERE kind = 'company' AND ref IN (SELECT DISTINCT bidder_id FROM contracts WHERE id GLOB 'c:[eo]:*');
+-- @refresh-batch entity-search-index
+DELETE FROM search_index WHERE kind = 'company';
 INSERT INTO search_index (kind, ref, title, ident, subtitle, amount)
 SELECT 'company', ct.bidder_id, ct.name, COALESCE(ct.eik, ''), COALESCE(ct.settlement, ''), ct.won_eur
-FROM company_totals ct WHERE ct.bidder_id IN (SELECT DISTINCT bidder_id FROM contracts WHERE id GLOB 'c:[eo]:*');
-DELETE FROM search_index WHERE kind = 'authority' AND ref IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*');
+FROM company_totals ct;
+DELETE FROM search_index WHERE kind = 'authority';
 INSERT INTO search_index (kind, ref, title, ident, subtitle, amount)
 SELECT 'authority', at.authority_id, at.name, COALESCE(substr(at.authority_id, 6), ''), COALESCE(at.settlement, ''), at.spent_eur
-FROM authority_totals at WHERE at.authority_id IN (SELECT DISTINCT t2.authority_id FROM contracts c2 JOIN tenders t2 ON t2.id = c2.tender_id WHERE c2.id GLOB 'c:[eo]:*');
--- contract search rows for the refresh-derived contracts
-DELETE FROM search_index WHERE kind = 'contract' AND ref GLOB 'c:[eo]:*';
+FROM authority_totals at;
+
+-- @refresh-batch contract-search-index
+DELETE FROM search_index WHERE kind = 'contract' AND ref IN (SELECT id FROM refresh_touched_contracts);
 INSERT INTO search_index (kind, ref, title, ident, subtitle, amount)
 SELECT 'contract', c.id, COALESCE(NULLIF(c.contract_subject, ''), t.title), COALESCE(t.source_id, ''),
   a.name || ' → ' || b.name, c.amount_eur
 FROM contracts c JOIN tenders t ON t.id = c.tender_id JOIN authorities a ON a.id = t.authority_id JOIN bidders b ON b.id = c.bidder_id
-WHERE c.id GLOB 'c:[eo]:*' AND COALESCE(NULLIF(c.contract_subject, ''), t.title) IS NOT NULL;
+WHERE c.id IN (SELECT id FROM refresh_touched_contracts)
+  AND COALESCE(NULLIF(c.contract_subject, ''), t.title) IS NOT NULL;
 
 -- Small global rollups - recomputed in full (one-row / small facet tables; cheap per refresh).
+-- @refresh-batch globals
 DELETE FROM data_freshness;
 INSERT INTO data_freshness (source, as_of, rows, refreshed_at)
 SELECT
@@ -938,3 +1128,8 @@ FROM contracts c JOIN tenders t ON t.id = c.tender_id GROUP BY t.procedure_type;
 INSERT INTO facet_counts (facet, key, contracts, value_eur)
 SELECT 'eu', CASE WHEN c.eu_funded = 1 THEN '1' ELSE '0' END, COUNT(*), COALESCE(SUM(c.amount_eur), 0)
 FROM contracts c GROUP BY CASE WHEN c.eu_funded = 1 THEN '1' ELSE '0' END;
+
+-- @refresh-batch cleanup
+DROP TABLE IF EXISTS refresh_touched_contracts;
+DROP TABLE IF EXISTS refresh_touched_bidders;
+DROP TABLE IF EXISTS refresh_touched_authorities;

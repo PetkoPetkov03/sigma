@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deleteSqlForEopSources } from './load-eop.mjs';
+import { deleteSqlForEopSources, isWithinMissingSettleWindow } from './load-eop.mjs';
 
 describe('deleteSqlForEopSources', () => {
   it('keeps the existing single-day source wipe', () => {
@@ -22,5 +22,16 @@ describe('deleteSqlForEopSources', () => {
       "DELETE FROM raw_egov_contracts WHERE source IN (\n  'eop:contracts:2024-01-02',\n  'eop:contracts:2024-01-03'\n);\n",
     );
     assert.equal(sql.includes("source LIKE 'eop:contracts:%'"), false);
+  });
+});
+
+describe('isWithinMissingSettleWindow', () => {
+  it('treats the trailing default window as unsettled', () => {
+    assert.equal(isWithinMissingSettleWindow('2026-06-07', '2026-06-10', 3), true);
+    assert.equal(isWithinMissingSettleWindow('2026-06-06', '2026-06-10', 3), false);
+  });
+
+  it('treats future requested buckets as unsettled', () => {
+    assert.equal(isWithinMissingSettleWindow('2026-06-11', '2026-06-10', 3), true);
   });
 });

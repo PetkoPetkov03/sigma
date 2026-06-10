@@ -44,6 +44,8 @@ const MAX_FILE_BYTES = 256 * 1024 * 1024; // keep each SQL chunk under Node's ~5
 const DEFAULT_FROM = '2020-01-01';
 const DEFAULT_TO = new Date().toISOString().slice(0, 10);
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_MISSING_SETTLE_DAYS = 3;
+const MS_PER_DAY = 86_400_000;
 const FETCH_ATTEMPTS = 6;
 const FETCH_TIMEOUT_MS = 60_000;
 const BASE_URL = (process.env.EOP_OPEN_DATA_BASE_URL || 'https://storage.eop.bg').replace(
@@ -130,6 +132,27 @@ function daysBetween(from, to) {
   const days = [];
   for (let t = start; t <= end; t += 86_400_000) days.push(new Date(t).toISOString().slice(0, 10));
   return days;
+}
+function nonnegativeIntEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10);
+}
+export function isWithinMissingSettleWindow(
+  day,
+  today = todayUtc(),
+  settleDays = nonnegativeIntEnv('EOP_MISSING_SETTLE_DAYS', DEFAULT_MISSING_SETTLE_DAYS),
+) {
+  validateDay(day, 'day');
+  validateDay(today, 'today');
+  const dayMs = new Date(`${day}T00:00:00Z`).getTime();
+  const todayMs = new Date(`${today}T00:00:00Z`).getTime();
+  const cutoffMs = todayMs - settleDays * MS_PER_DAY;
+  return dayMs >= cutoffMs;
 }
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -231,9 +254,12 @@ async function bucketKeysFor(day) {
 }
 async function readBucketKeysFor(day) {
   const missingPath = cachePath(day, '_missing');
-  if (await pathExists(missingPath)) {
+  const withinSettleWindow = isWithinMissingSettleWindow(day);
+  if ((await pathExists(missingPath)) && !withinSettleWindow) {
     process.stderr.write(`!! ${day}: not published (cached) — skipping\n`);
     return null;
+  } else if (withinSettleWindow && (await pathExists(missingPath))) {
+    process.stderr.write(`!! ${day}: ignoring recent _missing cache; re-probing\n`);
   }
 
   const keysPath = cachePath(day, '_keys.json');
@@ -266,7 +292,7 @@ async function readBucketKeysFor(day) {
     return keyMap;
   } catch (err) {
     if (err instanceof MissingBucketError) {
-      await atomicWrite(missingPath, '');
+      if (!withinSettleWindow) await atomicWrite(missingPath, '');
       process.stderr.write(`!! ${day}: not published (${err.status}) — skipping\n`);
       return null;
     }
