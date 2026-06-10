@@ -56,7 +56,7 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
     ['УНП · дата · CPV код', 'Преписка / обявление', 'has', 'да', 'info'],
     ['Сектор (раздел на CPV)', 'Раздел на CPV (детерминиран)', 'has', 'да', 'info'],
     ['Обект (доставки/услуги/строителство)', 'Обявление', 'has', 'да', 'info'],
-    ['ЕС финансиране (да/не)', 'Обявление / админ. експорт', 'has', 'да', 'info'],
+    ['ЕС финансиране (да/не)', 'Обявление', 'has', 'да', 'info'],
     [
       'Тип на институцията',
       'Вид на възложителя (ЗОП); групирането е евристично',
@@ -73,14 +73,14 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
     ],
     [
       'Програма на ЕС (име)',
-      'Административен експорт',
+      'Обявление',
       'gap',
       `≈${pct(loaderData.coverage.eu, 0)}`,
       'soft',
     ],
     [
       'Срок и дати на изпълнение',
-      'Административен експорт',
+      'Обявление',
       'gap',
       `≈${pct(loaderData.coverage.duration, 0)}`,
       'soft',
@@ -93,6 +93,7 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
       `≈${pct(loaderData.coverage.lot, 0)}`,
       'soft',
     ],
+    ['Седалище (град/област)', 'OCDS parties / адрес', 'gap', 'при наличие', 'soft'],
     ['Вторичен (допълнителен) CPV', '—', 'gap', 'не', 'none'],
     ['Стойности на отделните оферти', '—', 'gap', 'не', 'none'],
   ];
@@ -423,7 +424,7 @@ export default function Methodology({ loaderData }: Route.ComponentProps) {
                 </table>
               </div>
               <p className="small muted" style={{ marginTop: 'var(--s-3)' }}>
-                <strong>Местоположение (град/област)</strong>,{' '}
+                <strong>Място на изпълнение</strong>,{' '}
                 <strong>собственици и свързани лица</strong> и <strong>рискови сигнали</strong> са в
                 процес на разработка за следваща версия — изискват пълно сливане с допълнителни
                 източници и отделен аналитичен слой.

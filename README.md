@@ -1,6 +1,6 @@
 # СИГМА
 
-**СИГМА — Платформа за прозрачност на обществените поръчки** — a transparency-and-analysis platform for Bulgarian public procurement. СИГМА centralizes the full procurement lifecycle (planning → publication → bidding → evaluation → contract → execution) and layers AI checks on top: it flags rigged technical specifications, detects price anomalies against market indices, surfaces cartels and related-party networks, and publishes a public risk score for every tender.
+**СИГМА — Платформа за прозрачност на обществените поръчки** — a transparency and exploration layer for Bulgarian public procurement. Today СИГМА centralizes the public procurement record from the ЦАИС ЕОП open-data feed, connects institutions → companies → contracts, and makes every aggregate traceable down to the individual source contract. Risk scoring, anomaly detection, and cartel analysis are planned analysis-layer work; scaffolding exists in `packages/analysis`, but it is not wired into the live product yet.
 
 Built as an analysis/transparency layer over the national procurement data (АОП / ЦАИС ЕОП), with open data for citizens, journalists, and NGOs.
 
@@ -33,14 +33,14 @@ pnpm dev      # daily: starts every Worker + frontend in parallel
 | Top-level dir        | Contents                                                                                                                                                                                                                                                              |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apps/`              | Cloudflare Workers — `web` (React Router SSR explorer; citizen / authority / bidder portals; reads D1 directly via `@sigma/db`) and `etl` (ingestion + analysis pipeline)                                                                                               |
-| `packages/`          | Shared libraries — `api-contract`, `db`, `analysis` (risk scoring, anomaly + cartel detection), `config`, `shared`                                                                                                                                                     |
-| `scripts/`           | Bootstrap, deploy, setup-local, teardown; **АОП ingestion** (`load-aop.mjs`, `normalize-aop.sql`, `dq-aop.sql`)                                                                                                                                                       |
-| `data/`              | Source **АОП register exports** (`Храни.xlsx` — food-sector procurement, `Строителство.xlsx` — construction-sector), ~129k contract/lot rows; gitignored. Ingested into D1 by the `scripts/` pipeline — see [`docs/data-ingestion.md`](docs/data-ingestion.md)        |
+| `packages/`          | Shared libraries — `api-contract`, `db`, `analysis` (planned risk scoring, anomaly + cartel analysis scaffolding), `config`, `shared`                                                                                                                                  |
+| `scripts/`           | Bootstrap, deploy, setup-local, teardown; **ЦАИС ЕОП ingestion** (`load-eop.mjs`, `normalize-egov.sql`, `import.mjs`)                                                                                                                                                 |
+| `data/`              | Cached `storage.eop.bg` EOP open-data feed under `data/eop`, ~192k contracts covering 2020–2026; gitignored. Ingested into D1 by the `scripts/` pipeline — see [`docs/data-ingestion.md`](docs/data-ingestion.md)                                                     |
 | `docs/`              | Specification and design docs                                                                                                                                                                                                                                         |
 | `.devcontainer/`     | Container-based dev environment                                                                                                                                                                                                                                       |
 | `.github/workflows/` | CI: deploy on push, scheduled ingestion, tests on PR                                                                                                                                                                                                                  |
 
-The analysis/monitoring module (risk scoring 0–100, спец-checker AI, ценови аномалии, картелна детекция) is the heart of the system — see the architecture doc in `docs/`.
+The planned analysis layer covers risk scoring 0–100, спец-checker AI, ценови аномалии, and cartel detection. It is roadmap work, with pure-function scaffolding in `packages/analysis`; see the architecture doc in `docs/`.
 
 ## Common commands
 
