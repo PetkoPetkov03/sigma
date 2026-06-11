@@ -10,6 +10,10 @@ describe('csvCell', () => {
     expect(csvCell('\t=1+1')).toBe('"\'\t=1+1"');
     expect(csvCell(' =cmd')).toBe('"\' =cmd"');
     expect(csvCell('  \t+cmd')).toBe('"\'  \t+cmd"');
+    expect(csvCell('\u00A0=cmd')).toBe('"\'\u00A0=cmd"');
+    expect(csvCell('\u2007+cmd')).toBe('"\'\u2007+cmd"');
+    expect(csvCell('\uFEFF@cmd')).toBe('"\'\uFEFF@cmd"');
+    expect(csvCell('\u0001=cmd')).toBe('"\'\u0001=cmd"');
   });
 
   it('quotes CR-containing cells', () => {
