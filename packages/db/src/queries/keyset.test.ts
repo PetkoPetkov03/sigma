@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decodeCursor, encodeCursor, keyset, pageCursors } from './keyset';
+import { decodeCursor, encodeCursor, filterSignature, keyset, pageCursors } from './keyset';
 
 describe('cursor encode/decode', () => {
   it('round-trips a [value, id] pair', () => {
@@ -30,6 +30,11 @@ describe('cursor encode/decode', () => {
     const c = encodeCursor('after', 10, 'x');
     expect(decodeCursor(c, 'new-sort')).toBeNull();
   });
+  it('builds canonical filter signatures for set-valued params', () => {
+    expect(filterSignature({ sectors: ['45', '30', '45'], eu: 'eu', empty: [] })).toBe(
+      filterSignature({ eu: 'eu', sectors: ['30', '45'] }),
+    );
+  });
 });
 
 describe('keyset clause', () => {
@@ -47,6 +52,46 @@ describe('keyset clause', () => {
     expect(k.orderSql).toContain('DESC');
     expect(k.params).toEqual([1000, 1000, 'x']);
     expect(k.reverse).toBe(false);
+  });
+  it('accepts cursors minted under the same filter signature', () => {
+    const signature = filterSignature({ sectors: ['30', '45'], eu: 'eu' });
+    const firstPage = keyset({
+      sortCol: 'won_eur',
+      idCol: 'bidder_id',
+      dir: 'desc',
+      filterSignature: signature,
+    });
+    const cursor = encodeCursor('after', 1000, 'x', firstPage.cursorToken);
+    const k = keyset({
+      sortCol: 'won_eur',
+      idCol: 'bidder_id',
+      dir: 'desc',
+      cursor,
+      filterSignature: filterSignature({ eu: 'eu', sectors: ['45', '30'] }),
+    });
+
+    expect(k.cursor).toMatchObject({ dir: 'after', value: 1000, id: 'x' });
+    expect(k.params).toEqual([1000, 1000, 'x']);
+  });
+  it('rejects cursors replayed under a different filter signature', () => {
+    const oldPage = keyset({
+      sortCol: 'won_eur',
+      idCol: 'bidder_id',
+      dir: 'desc',
+      filterSignature: filterSignature({ sectors: ['30'] }),
+    });
+    const cursor = encodeCursor('after', 1000, 'x', oldPage.cursorToken);
+    const k = keyset({
+      sortCol: 'won_eur',
+      idCol: 'bidder_id',
+      dir: 'desc',
+      cursor,
+      filterSignature: filterSignature({ sectors: ['45'] }),
+    });
+
+    expect(k.cursor).toBeNull();
+    expect(k.whereSql).toBe('');
+    expect(k.params).toEqual([]);
   });
   it('inverts direction for a backward (before) cursor and flags reverse', () => {
     const firstPage = keyset({ sortCol: 'won_eur', idCol: 'bidder_id', dir: 'desc' });

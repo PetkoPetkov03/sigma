@@ -5,7 +5,7 @@
 import type { AuthorityListItem, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS } from '@sigma/config';
 import { csvCell } from './csv';
-import { keyset, pageCursors } from './keyset';
+import { filterSignature, keyset, pageCursors } from './keyset';
 import { toAuthorityListItem, typeLabel, type AuthorityTotalsRow } from './rows';
 import { searchMatchQuery } from './search';
 
@@ -88,6 +88,16 @@ function entityWhere(p: AuthorityListParams): { sql: string; params: unknown[] }
   return { sql: where.join(' AND '), params };
 }
 
+function authorityFilterSignature(p: AuthorityListParams): string {
+  return filterSignature({
+    types: p.types,
+    sectors: p.sectors,
+    years: p.years,
+    eu: normalizeEu(p.eu),
+    q: searchMatchQuery(p.q ?? ''),
+  });
+}
+
 export async function listAuthorities(
   db: D1Database,
   p: AuthorityListParams,
@@ -96,11 +106,13 @@ export async function listAuthorities(
   const pageSize = p.pageSize ?? 25;
   const src = source(p);
   const ew = entityWhere(p);
+  const signature = authorityFilterSignature(p);
   const ks = keyset({
     sortCol: sort.col,
     idCol: 'authority_id',
     dir: sort.dir,
     cursor: p.cursor,
+    filterSignature: signature,
     allowedSortCols: Object.values(SORTS).map((s) => s.col),
   });
   const conds = [ew.sql, ks.whereSql].filter(Boolean).join(' AND ');

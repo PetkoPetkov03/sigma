@@ -79,11 +79,40 @@ function assertSortDir(dir: string): asserts dir is SortDir {
   if (dir !== 'asc' && dir !== 'desc') throw new Error(`Unsafe keyset dir: ${dir}`);
 }
 
-function sortToken(sortCol: string, idCol: string, dir: SortDir): string {
+function hashToken(input: string): string {
   let h = 5381;
-  const input = `${sortCol}\u001f${idCol}\u001f${dir}`;
   for (let i = 0; i < input.length; i += 1) h = ((h << 5) + h) ^ input.charCodeAt(i);
   return (h >>> 0).toString(36);
+}
+
+function sortToken(sortCol: string, idCol: string, dir: SortDir, filterSignature = ''): string {
+  return hashToken(`${sortCol}\u001f${idCol}\u001f${dir}\u001f${filterSignature}`);
+}
+
+function normalizeSignatureValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((v) => String(v)))].sort();
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const normalized = normalizeSignatureValue((value as Record<string, unknown>)[key]);
+      if (
+        normalized === null ||
+        normalized === undefined ||
+        (Array.isArray(normalized) && normalized.length === 0)
+      ) {
+        continue;
+      }
+      out[key] = normalized;
+    }
+    return out;
+  }
+  return value ?? null;
+}
+
+export function filterSignature(filters: Record<string, unknown>): string {
+  return JSON.stringify(normalizeSignatureValue(filters));
 }
 
 /**
@@ -96,13 +125,14 @@ export function keyset(opts: {
   idCol: string;
   dir: SortDir;
   cursor?: string | null;
+  filterSignature?: string;
   allowedSortCols?: readonly string[];
   allowedIdCols?: readonly string[];
 }): KeysetClause {
   assertSortDir(opts.dir);
   assertSafeColumn(opts.sortCol, 'sortCol', opts.allowedSortCols);
   assertSafeColumn(opts.idCol, 'idCol', opts.allowedIdCols);
-  const token = sortToken(opts.sortCol, opts.idCol, opts.dir);
+  const token = sortToken(opts.sortCol, opts.idCol, opts.dir, opts.filterSignature);
   const decoded = decodeCursor(opts.cursor, token);
   // 'before' walks against the natural direction.
   const effectiveDir: SortDir =

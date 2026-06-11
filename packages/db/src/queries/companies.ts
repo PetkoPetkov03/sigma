@@ -5,7 +5,7 @@
 import type { CompanyListItem, EntityKind, FacetCount, Page } from '@sigma/api-contract';
 import { CPV_SECTORS, ENTITY_TYPES } from '@sigma/config';
 import { csvCell } from './csv';
-import { keyset, pageCursors } from './keyset';
+import { filterSignature, keyset, pageCursors } from './keyset';
 import { toCompanyListItem, type CompanyTotalsRow } from './rows';
 import { searchMatchQuery } from './search';
 
@@ -99,6 +99,17 @@ function entityWhere(p: CompanyListParams): { sql: string; params: unknown[] } {
   return { sql: where.join(' AND '), params };
 }
 
+function companyFilterSignature(p: CompanyListParams): string {
+  return filterSignature({
+    kinds: p.kinds,
+    countBucket: p.countBucket,
+    sectors: p.sectors,
+    years: p.years,
+    eu: normalizeEu(p.eu),
+    q: searchMatchQuery(p.q ?? ''),
+  });
+}
+
 export async function listCompanies(
   db: D1Database,
   p: CompanyListParams,
@@ -107,11 +118,13 @@ export async function listCompanies(
   const pageSize = p.pageSize ?? 25;
   const src = source(p);
   const ew = entityWhere(p);
+  const signature = companyFilterSignature(p);
   const ks = keyset({
     sortCol: sort.col,
     idCol: 'bidder_id',
     dir: sort.dir,
     cursor: p.cursor,
+    filterSignature: signature,
     allowedSortCols: Object.values(SORTS).map((s) => s.col),
   });
   const conds = [ew.sql, ks.whereSql].filter(Boolean).join(' AND ');

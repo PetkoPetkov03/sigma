@@ -6,7 +6,7 @@ import { CPV_SECTORS, PROCEDURE_GROUPS, procedureGroup } from '@sigma/config';
 import { cleanName, entityName } from '@sigma/shared';
 import { csvCell } from './csv';
 import { authoritySlug, bidderIdFromSlug, companySlug, contractSlug } from './identity';
-import { keyset, pageCursors } from './keyset';
+import { filterSignature, keyset, pageCursors } from './keyset';
 import { searchMatchQuery } from './search';
 
 export type ContractSort = 'value-desc' | 'value-asc' | 'date-desc' | 'date-asc';
@@ -141,6 +141,20 @@ function buildFilters(p: ContractListParams): { sql: string; params: unknown[] }
   return { sql: where.length ? ' WHERE ' + where.join(' AND ') : '', params };
 }
 
+function contractFilterSignature(p: ContractListParams): string {
+  const bidder = p.bidder ? (bidderIdFromSlug(p.bidder) ?? `invalid:${p.bidder}`) : null;
+  return filterSignature({
+    years: p.years,
+    sectors: p.sectors,
+    procedureGroups: p.procedureGroups,
+    valueBucket: p.valueBucket,
+    eu: p.eu,
+    authority: p.authority,
+    bidder,
+    q: searchMatchQuery(p.q ?? ''),
+  });
+}
+
 function toItem(r: ContractRow): ContractListItem {
   const authorityName = cleanName(r.authority_name);
   const bidderName = cleanName(r.bidder_name);
@@ -178,11 +192,13 @@ export async function listContracts(
   const sort = SORTS[p.sort as keyof typeof SORTS] ?? SORTS['value-desc'];
   const pageSize = p.pageSize ?? 15;
   const filters = buildFilters(p);
+  const signature = contractFilterSignature(p);
   const ks = keyset({
     sortCol: sort.expr,
     idCol: 'c.id',
     dir: sort.dir,
     cursor: p.cursor,
+    filterSignature: signature,
     allowedSortCols: Object.values(SORTS).map((s) => s.expr),
   });
 
