@@ -125,6 +125,47 @@ jobs:
         if: steps.guard.outputs.ok == 'true'
         run: pnpm --filter @sigma/web run deploy
 
+      - name: Initialize LOG_IP_KEY secret if absent
+        if: steps.guard.outputs.ok == 'true'
+        run: |
+          # LOG_IP_KEY is long-lived so IP HMAC tokens remain stable for same-client correlation.
+          # Never overwrite it; a new blue-green worker name starts without a key and correlation
+          # resets at full infra cutover, which is acceptable. The deploy token already has
+          # Workers Scripts:Edit, so no separate Cloudflare token is required.
+          if ! secrets_json="$(pnpm --filter @sigma/web exec wrangler secret list --name "$SIGMA_WEB_NAME" --format json)"; then
+            echo "Skipping LOG_IP_KEY initialization: failed to list secrets for $SIGMA_WEB_NAME."
+            exit 0
+          fi
+
+          set +e
+          printf '%s' "$secrets_json" | node -e '
+            const fs = require("fs");
+            let secrets;
+            try {
+              secrets = JSON.parse(fs.readFileSync(0, "utf8"));
+            } catch {
+              process.exit(2);
+            }
+            if (!Array.isArray(secrets)) {
+              process.exit(2);
+            }
+            process.exit(secrets.some((secret) => secret && secret.name === "LOG_IP_KEY") ? 0 : 1);
+          '
+          secret_status="$?"
+          set -e
+
+          if [ "$secret_status" = 0 ]; then
+            echo "LOG_IP_KEY already exists for $SIGMA_WEB_NAME; leaving it unchanged."
+            exit 0
+          fi
+          if [ "$secret_status" != 1 ]; then
+            echo "Skipping LOG_IP_KEY initialization: unexpected secret list output for $SIGMA_WEB_NAME."
+            exit 0
+          fi
+
+          key="$(openssl rand -hex 32)"
+          printf '%s' "$key" | pnpm --filter @sigma/web exec wrangler secret put LOG_IP_KEY --name "$SIGMA_WEB_NAME"
+
       - name: Deploy refresh Workflow (sigma-etl)
         if: steps.guard.outputs.ok == 'true'
         run: pnpm --filter @sigma/etl run deploy
