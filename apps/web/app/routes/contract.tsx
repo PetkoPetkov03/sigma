@@ -65,7 +65,7 @@ export async function loader({ params, context }: Route.LoaderArgs) {
   return { contract };
 }
 
-const SUSPECT = <span className="suspect">данните се преглеждат</span>;
+const UNVERIFIED_VALUE_LABEL = 'стойност с непотвърдена достоверност';
 
 export default function Contract({ loaderData }: Route.ComponentProps) {
   const c = loaderData.contract;
@@ -77,8 +77,7 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
   // Procurement subjects range from a few words to 200+ chars. Step the editorial h1 down by length
   // so long titles don't tower; the longest tier (`t-sm`) also line-clamps. Nothing is lost — the
   // full subject is always shown below in „Подробности → Предмет".
-  const titleClass =
-    c.subject.length > 140 ? 't-sm' : c.subject.length > 70 ? 't-md' : undefined;
+  const titleClass = c.subject.length > 140 ? 't-sm' : c.subject.length > 70 ? 't-md' : undefined;
   const betweenParties = `/contracts?authority=${c.authority.slug}&bidder=${c.bidder.slug}`;
 
   return (
@@ -134,7 +133,9 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
                 <path d="M9 1.75V5.25h3.5" />
               </svg>
               Виж документите в ЦАИС ЕОП
-              <span className="cta-ext" aria-hidden="true">↗</span>
+              <span className="cta-ext" aria-hidden="true">
+                ↗
+              </span>
             </a>
           )}
         </PageHeader>
@@ -146,27 +147,23 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
         >
           <div className="value-history">
             <div className="vh">
-              <div className="step">Прогнозна {c.lots ? '(цялата преписка)' : ''}</div>
+              <div className="step">Прогнозна {c.lots ? '(позицията)' : ''}</div>
               <strong className="num">
                 {v.estimatedEur != null ? money(v.estimatedEur) : '—'}
               </strong>
-              {c.lots?.numLots ? (
-                <div className="sub">
-                  оценка за всичките {count(c.lots.numLots)} обособени позиции
-                </div>
+              {c.lots?.numLots && v.procedureEstimatedEur != null ? (
+                <div className="sub">цялата преписка: {money(v.procedureEstimatedEur)}</div>
               ) : null}
             </div>
             <div className="vh">
               <div className="step">При сключване</div>
-              <strong className="num">
-                {v.signingEur != null ? money(v.signingEur) : SUSPECT}
-              </strong>
+              <strong className="num">{v.signingEur != null ? money(v.signingEur) : '—'}</strong>
+              {v.suspect && <div className="sub suspect">{UNVERIFIED_VALUE_LABEL}</div>}
             </div>
             <div className="vh now">
               <div className="step">Текуща стойност</div>
-              <strong className="num">
-                {v.currentEur != null ? money(v.currentEur) : SUSPECT}
-              </strong>
+              <strong className="num">{v.currentEur != null ? money(v.currentEur) : '—'}</strong>
+              {v.suspect && <div className="sub suspect">{UNVERIFIED_VALUE_LABEL}</div>}
               {v.deltaPct != null && (
                 <div className="delta">{signedPct(v.deltaPct)} спрямо сключване</div>
               )}
@@ -174,8 +171,7 @@ export default function Contract({ loaderData }: Route.ComponentProps) {
           </div>
           {v.suspect && (
             <p className="small muted">
-              Стойност с непотвърдена достоверност (анекс или явна грешка) — изключена от сумите и
-              скрита, вместо да се показва съмнително число. Виж{' '}
+              Показана е публикуваната стойност от източника, без СИГМА да я коригира. Виж{' '}
               <Link to="/methodology">методология</Link>.
             </p>
           )}

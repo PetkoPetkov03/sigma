@@ -90,6 +90,7 @@ CREATE TABLE bidders (
   eik_valid      INTEGER NOT NULL DEFAULT 0,  -- 1 if eik_normalized is a valid 9/13-digit ЕИК
   is_consortium  INTEGER NOT NULL DEFAULT 0,  -- 1 if the name is a JV (ДЗЗД / ОБЕДИНЕНИЕ / КОНСОРЦИУМ / member list)
   kind           TEXT NOT NULL DEFAULT 'company',  -- 'company' | 'consortium'
+  ownership_kind TEXT,                        -- state | municipal | mixed; curated public-owned winner allowlist
   -- company master data — filled from OCDS parties; NULL until those loaders run
   legal_form   TEXT,                       -- правна форма (ООД / ЕООД / АД / ЕТ / ДЗЗД …)
   nuts         TEXT,                        -- NUTS region code
@@ -222,6 +223,7 @@ CREATE TABLE company_totals (
   bidder_id      TEXT PRIMARY KEY REFERENCES bidders(id),
   name           TEXT NOT NULL,
   kind           TEXT NOT NULL,            -- company | consortium
+  ownership_kind TEXT,                      -- state | municipal | mixed; copied from bidders
   eik            TEXT,                      -- eik_normalized (NULL when name-keyed)
   eik_valid      INTEGER NOT NULL DEFAULT 0,
   settlement     TEXT,

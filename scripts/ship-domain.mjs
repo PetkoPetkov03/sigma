@@ -212,5 +212,6 @@ for (const table of TABLES) {
 }
 
 console.log('==> precompute on served D1');
+d1File(resolve(root, 'scripts/seed-state-owned.sql'));
 d1File(resolve(root, 'scripts/precompute.sql'));
 console.log('==> ship complete');

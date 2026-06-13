@@ -276,6 +276,30 @@ FROM (
 WHERE bidder_key IS NOT NULL
 GROUP BY bidder_key;
 
+-- 4b) Curated public-owned winner classification. Exact EIK matches cover the allowlist; a small
+-- branch list handles valid 13-digit branch EIKs used by AПИ/ОПУ, ЕСО/МЕР, БНР and Информационно
+-- обслужване. Private look-alikes stay absent from the seed table and therefore remain NULL.
+CREATE TABLE IF NOT EXISTS state_owned_eik (
+  eik TEXT PRIMARY KEY,
+  ownership_kind TEXT NOT NULL CHECK (ownership_kind IN ('state', 'municipal', 'mixed')),
+  canonical_name TEXT NOT NULL
+);
+
+UPDATE bidders
+SET ownership_kind = (
+  SELECT s.ownership_kind
+  FROM state_owned_eik s
+  WHERE bidders.eik_valid = 1
+    AND (
+      bidders.eik_normalized = s.eik
+      OR (s.eik = '000695089' AND bidders.eik_normalized GLOB '0006950890*')
+      OR (s.eik = '175201304' AND bidders.eik_normalized GLOB '1752013040*')
+      OR (s.eik = '000672343' AND bidders.eik_normalized GLOB '0006723430*')
+      OR (s.eik = '831641791' AND bidders.eik_normalized GLOB '8316417910124*')
+    )
+  LIMIT 1
+);
+
 -- 5) Contracts — awarded lines (1:1 with staging rows), linked to tender + winning bidder,
 --    with the data-quality verdict (see 0007_data_quality.sql):
 --      value_flag = 'value_suspect'  signed value ≥100× estimate (untrustworthy, excluded from sums)
@@ -396,6 +420,36 @@ FROM (
         END AS lot_norm,
         CASE
           WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
+          WHEN COALESCE(c.current_value, c.signing_value) <= 0 THEN 'value_suspect'
+          WHEN c.estimated_value > 0 AND c.signing_value IS NOT NULL AND (
+            CASE
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+              ELSE c.signing_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = c.currency
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END
+          ) / NULLIF((
+            CASE
+              WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.estimated_value
+              WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.estimated_value / 1.95583
+              ELSE c.estimated_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''))
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END
+          ), 0) < 0.05 THEN 'value_suspect'
           WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
           WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
           ELSE 'ok'
@@ -587,6 +641,36 @@ SELECT
       SELECT c.*,
         CASE
           WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
+          WHEN COALESCE(c.current_value, c.signing_value) <= 0 THEN 'value_suspect'
+          WHEN c.estimated_value > 0 AND c.signing_value IS NOT NULL AND (
+            CASE
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+              WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+              ELSE c.signing_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = c.currency
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END
+          ) / NULLIF((
+            CASE
+              WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.estimated_value
+              WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.estimated_value / 1.95583
+              ELSE c.estimated_value * (
+                SELECT f.eur_per_unit
+                FROM fx_rates f
+                WHERE f.base_currency = COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''))
+                  AND f.rate_date <= c.contract_date
+                  AND f.rate_date >= date(c.contract_date, '-10 days')
+                ORDER BY f.rate_date DESC
+                LIMIT 1
+              )
+            END
+          ), 0) < 0.05 THEN 'value_suspect'
           WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
           WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
           ELSE 'ok'

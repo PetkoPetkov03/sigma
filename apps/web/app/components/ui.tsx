@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { OwnershipKind } from '@sigma/api-contract';
 import { pct } from '@sigma/shared';
 
 // Small editorial primitives shared across pages. Class definitions live in app.css (ported verbatim
@@ -6,6 +7,17 @@ import { pct } from '@sigma/shared';
 
 export function Chip({ children }: { children: ReactNode }) {
   return <span className="chip">{children}</span>;
+}
+
+const OWNERSHIP_LABELS: Record<OwnershipKind, string> = {
+  state: 'държавно',
+  municipal: 'общинско',
+  mixed: 'държавно-общинско',
+};
+
+export function OwnershipChip({ kind }: { kind: OwnershipKind | null | undefined }) {
+  if (!kind) return null;
+  return <Chip>{OWNERSHIP_LABELS[kind]}</Chip>;
 }
 
 export function Flag({

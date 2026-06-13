@@ -15,13 +15,21 @@ const baseContractRow = {
   eu_programme: null,
   duration_days: null,
   amount_eur: 5000,
-  signing_value_eur: 5000,
-  current_value_eur: null,
-  value_flag: 'ok',
+  signing_value: 5000 as number | null,
+  current_value: null as number | null,
+  fx_rate: null as number | null,
+  signing_value_eur: 5000 as number | null,
+  current_value_eur: null as number | null,
+  value_flag: 'ok' as string,
+  date_flag: 'ok',
   bids_received: 2,
   bids_rejected: 0,
   bids_sme: 1,
   bids_non_eea: 0,
+  subcontractor_eik: null,
+  subcontractor_name: null,
+  subcontract_value: null,
+  contract_currency: 'EUR',
   title: 'Tender subject',
   unp: 'UNP-1',
   procedure_type: 'Открита процедура',
@@ -79,6 +87,7 @@ describe('getContract', () => {
           lot_id: 'lot:UNP-1:1',
           title: 'Lot 1',
           estimated_value: 5000,
+          estimated_currency: 'EUR',
           cpv_code: null,
           contract_id: 'c:1',
           signing_value_eur: 5000,
@@ -91,6 +100,7 @@ describe('getContract', () => {
           lot_id: 'lot:UNP-1:2',
           title: 'Lot 2',
           estimated_value: 7000,
+          estimated_currency: 'EUR',
           cpv_code: null,
           contract_id: null,
           signing_value_eur: null,
@@ -103,7 +113,8 @@ describe('getContract', () => {
       'c:1',
     );
 
-    expect(detail?.value.estimatedEur).toBe(10000);
+    expect(detail?.value.estimatedEur).toBe(5000);
+    expect(detail?.value.procedureEstimatedEur).toBe(10000);
     expect(detail?.lots?.rows.map((r) => r.estimatedEur)).toEqual([5000, 7000]);
     expect(detail?.lots?.estimatedTotalEur).toBe(12000);
   });
@@ -121,6 +132,7 @@ describe('getContract', () => {
           lot_id: 'lot:UNP-1:1',
           title: 'Lot 1',
           estimated_value: 5000,
+          estimated_currency: 'USD',
           cpv_code: null,
           contract_id: 'c:1',
           signing_value_eur: 4500,
@@ -133,6 +145,7 @@ describe('getContract', () => {
           lot_id: 'lot:UNP-1:2',
           title: 'Lot 2',
           estimated_value: 7000,
+          estimated_currency: 'USD',
           cpv_code: null,
           contract_id: null,
           signing_value_eur: null,
@@ -145,8 +158,32 @@ describe('getContract', () => {
       'c:1',
     );
 
-    expect(detail?.value.estimatedEur).toBe(9000);
+    expect(detail?.value.estimatedEur).toBe(4500);
+    expect(detail?.value.procedureEstimatedEur).toBe(9000);
     expect(detail?.lots?.rows.map((r) => r.estimatedEur)).toEqual([4500, null]);
     expect(detail?.lots?.estimatedTotalEur).toBe(4500);
+  });
+
+  it('keeps display values visible for unverified value flags', async () => {
+    for (const flag of ['value_suspect', 'annex_suspect', 'review']) {
+      const detail = await getContract(
+        fakeDb(
+          {
+            ...baseContractRow,
+            signing_value: 256.49,
+            current_value: flag === 'annex_suspect' ? 1025.96 : null,
+            signing_value_eur: flag === 'value_suspect' ? null : 256.49,
+            current_value_eur: null,
+            value_flag: flag,
+          },
+          [],
+        ),
+        'c:1',
+      );
+
+      expect(detail?.value.suspect).toBe(true);
+      expect(detail?.value.signingEur).toBe(256.49);
+      expect(detail?.value.currentEur).toBe(flag === 'annex_suspect' ? 1025.96 : 256.49);
+    }
   });
 });

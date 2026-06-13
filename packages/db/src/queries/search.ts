@@ -3,7 +3,8 @@
 // „start-of-word" prefix matching, so „стр" finds „строителство", „Страбаг". УНП/ЕИК fragments work
 // because the tokenizer splits them the same way on both sides.
 
-import type { SearchHit, SearchResults } from '@sigma/api-contract';
+import type { EntityKind, OwnershipKind, SearchHit, SearchResults } from '@sigma/api-contract';
+import { cleanName, entityName, parseConsortiumMembers } from '@sigma/shared';
 import { hrefForEntity } from './identity';
 
 export type SearchKind = 'authority' | 'company' | 'contract';
@@ -75,7 +76,10 @@ function deHomoglyph(q: string): string {
  *  term like „ALSTOM" passes through untouched, otherwise its Latin a/o/t/m would be swapped to
  *  Cyrillic and the resulting mixed-script token would match nothing in the index. */
 export function searchMatchQuery(q: string): string | null {
-  const terms = q.slice(0, MAX_QUERY_CHARS).toLowerCase().match(/[\p{L}\p{N}]+/gu);
+  const terms = q
+    .slice(0, MAX_QUERY_CHARS)
+    .toLowerCase()
+    .match(/[\p{L}\p{N}]+/gu);
   if (!terms || terms.length === 0) return null;
   return terms
     .slice(0, MAX_QUERY_TOKENS)
@@ -113,6 +117,9 @@ interface HitRow {
   ident: string | null;
   subtitle: string | null;
   amount: number | null;
+  entity_kind: EntityKind | null;
+  ownership_kind: OwnershipKind | null;
+  eik_valid: number | null;
 }
 
 export async function search(db: D1Database, rawQuery: string): Promise<SearchResults> {
@@ -138,19 +145,34 @@ export async function search(db: D1Database, rawQuery: string): Promise<SearchRe
       if (total === 0) return { kind: g.kind, label: g.label, total: 0, hits: [], moreHref: null };
       const { results } = await db
         .prepare(
-          `SELECT ref, title, ident, subtitle, amount FROM search_index
-           WHERE kind = ? AND search_index MATCH ? ORDER BY rank LIMIT ?`,
+          `SELECT search_index.ref, search_index.title, search_index.ident,
+                  search_index.subtitle, search_index.amount,
+                  ct.kind AS entity_kind, ct.ownership_kind, ct.eik_valid
+           FROM search_index
+           LEFT JOIN company_totals ct
+             ON search_index.kind = 'company' AND ct.bidder_id = search_index.ref
+           WHERE search_index.kind = ? AND search_index MATCH ?
+           ORDER BY rank LIMIT ?`,
         )
         .bind(g.kind, match, g.limit)
         .all<HitRow>();
       const hits: SearchHit[] = results.map((r) => {
         const href = hrefForEntity(g.kind, r.ref);
+        const isCompany = g.kind === 'company';
+        const companyKind = r.entity_kind ?? 'company';
+        const isConsortium = isCompany && companyKind === 'consortium';
+        const membership = isConsortium ? parseConsortiumMembers(r.title) : null;
+        const memberCount = membership?.kind === 'list' ? membership.members.length : null;
+        const hasEik = isCompany ? r.eik_valid === 1 && Boolean(r.ident) : undefined;
         return {
           kind: g.kind,
           slug: href.split('/').pop()!,
           href,
-          title: r.title,
+          title: isCompany ? entityName(cleanName(r.title), companyKind) : r.title,
           ident: r.ident || null,
+          ...(isCompany
+            ? { isConsortium, hasEik, ownershipKind: r.ownership_kind, memberCount }
+            : {}),
           subtitle: r.subtitle || null,
           amountEur: r.amount,
           amountLabel: g.amountLabel,

@@ -5,6 +5,7 @@
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 
 export type EntityKind = 'company' | 'consortium';
+export type OwnershipKind = 'state' | 'municipal' | 'mixed';
 
 /** One keyset page. Total is from a rollup or a cached COUNT; cursors drive Prev/Next (no deep
  *  OFFSET page-jumps — see docs/v1-implementation-plan.md "Pagination"). */
@@ -69,8 +70,11 @@ export interface CompanyListItem {
   name: string; // source name (verbatim)
   displayName: string; // entityName() — consortium collapsed to „first и др."
   kind: EntityKind;
+  isConsortium: boolean;
   eik: string | null;
   eikValid: boolean;
+  hasEik: boolean;
+  ownershipKind: OwnershipKind | null;
   settlement: string | null;
   sector: SectorRef | null; // primary sector
   wonEur: number;
@@ -110,8 +114,11 @@ export interface CompanyDetail {
   name: string;
   displayName: string;
   kind: EntityKind;
+  isConsortium: boolean;
   eik: string | null;
   eikValid: boolean;
+  hasEik: boolean;
+  ownershipKind: OwnershipKind | null;
   settlement: string | null;
   region: string | null;
   legalForm: string | null;
@@ -230,11 +237,12 @@ export interface ContractParty {
 }
 
 export interface ContractValueTimeline {
-  estimatedEur: number | null; // procurement-level forecast (whole prepiska)
+  estimatedEur: number | null; // lot forecast when available; otherwise procurement-level forecast
+  procedureEstimatedEur: number | null; // procurement-level forecast (whole prepiska), for context
   signingEur: number | null;
   currentEur: number | null;
   deltaPct: number | null; // (current − signing) / signing, when both present
-  suspect: boolean; // value_/annex_suspect → figures suppressed
+  suspect: boolean; // value_/annex_suspect/review → render with an unverified-value label
 }
 
 export interface ContractLotRow {
@@ -370,6 +378,10 @@ export interface SearchHit {
   href: string;
   title: string;
   ident: string | null; // ЕИК / УНП
+  isConsortium?: boolean;
+  hasEik?: boolean;
+  ownershipKind?: OwnershipKind | null;
+  memberCount?: number | null;
   subtitle: string | null;
   amountEur: number | null;
   amountLabel: string; // „общо похарчено" / „общо спечелено" / „стойност"

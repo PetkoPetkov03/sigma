@@ -9,13 +9,38 @@ import {
 } from './search';
 
 function searchDb(): D1Database {
-  const companyRows = Array.from({ length: 6 }, (_, i) => ({
-    ref: `eik:11111111${i}`,
-    title: `Company ${i}`,
-    ident: `11111111${i}`,
-    subtitle: null,
-    amount: 1000 + i,
-  }));
+  const companyRows = [
+    {
+      ref: 'name:А1 БЪЛГАРИЯ ЕАД; БЕТА ООД',
+      title: 'А1 БЪЛГАРИЯ ЕАД; БЕТА ООД',
+      ident: '',
+      subtitle: null,
+      amount: 2000,
+      entity_kind: 'consortium',
+      ownership_kind: null,
+      eik_valid: 0,
+    },
+    {
+      ref: 'name:No EIK Company',
+      title: 'No EIK Company',
+      ident: '',
+      subtitle: null,
+      amount: 1500,
+      entity_kind: 'company',
+      ownership_kind: null,
+      eik_valid: 0,
+    },
+    ...Array.from({ length: 4 }, (_, i) => ({
+      ref: `eik:11111111${i}`,
+      title: `Company ${i}`,
+      ident: `11111111${i}`,
+      subtitle: null,
+      amount: 1000 + i,
+      entity_kind: 'company',
+      ownership_kind: i === 0 ? 'state' : null,
+      eik_valid: 1,
+    })),
+  ];
   const contractRows = Array.from({ length: 6 }, (_, i) => ({
     ref: `c:${i}`,
     title: `Contract ${i}`,
@@ -97,5 +122,29 @@ describe('search', () => {
     );
     expect(contract?.moreHref).toBeNull();
     expect(authority?.moreHref).toBeNull();
+  });
+
+  it('flags company search exceptions without exposing consortium member piles as titles', async () => {
+    const results = await search(searchDb(), 'а1');
+    const hits = results.groups.find((g) => g.kind === 'company')?.hits ?? [];
+
+    expect(hits[0]).toMatchObject({
+      title: 'А1 БЪЛГАРИЯ ЕАД и др.',
+      ident: null,
+      isConsortium: true,
+      hasEik: false,
+      memberCount: 2,
+    });
+    expect(hits[1]).toMatchObject({
+      title: 'No EIK Company',
+      ident: null,
+      isConsortium: false,
+      hasEik: false,
+      memberCount: null,
+    });
+    expect(hits[2]).toMatchObject({
+      title: 'Company 0',
+      ownershipKind: 'state',
+    });
   });
 });

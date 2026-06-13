@@ -50,7 +50,7 @@ const COUNT_BUCKETS: Record<string, string> = lookup({
 
 const qs = (n: number) => Array.from({ length: n }, () => '?').join(', ');
 
-const COLS = `bidder_id, name, kind, eik, eik_valid, settlement, won_eur, contracts, authorities, primary_sector, eu_eur, first_date, last_date`;
+const COLS = `bidder_id, name, kind, ownership_kind, eik, eik_valid, settlement, won_eur, contracts, authorities, primary_sector, eu_eur, first_date, last_date`;
 
 function normalizeEu(eu: unknown): 'eu' | 'national' | null {
   return eu === 'eu' || eu === 'national' ? eu : null;
@@ -81,7 +81,7 @@ function source(p: CompanyListParams): { from: string; params: unknown[] } {
   else if (eu === 'national') where.push('(c.eu_funded IS NULL OR c.eu_funded = 0)');
   const single = p.sectors?.length === 1 ? p.sectors[0]! : null;
   const from = `(
-    SELECT b.id AS bidder_id, b.name, b.kind, b.eik_normalized AS eik, b.eik_valid, b.settlement,
+    SELECT b.id AS bidder_id, b.name, b.kind, b.ownership_kind, b.eik_normalized AS eik, b.eik_valid, b.settlement,
            SUM(c.amount_eur) AS won_eur, COUNT(*) AS contracts, COUNT(DISTINCT t.authority_id) AS authorities,
            ${single ? '?' : 'NULL'} AS primary_sector,
            SUM(CASE WHEN c.eu_funded = 1 THEN c.amount_eur ELSE 0 END) AS eu_eur,

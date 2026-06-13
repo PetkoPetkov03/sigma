@@ -9,7 +9,7 @@ import { FilterRail, type FilterGroup } from '../components/FilterRail';
 import { ListControls } from '../components/ListControls';
 import { Pagination } from '../components/Pagination';
 import { DataTable, type Column } from '../components/DataTable';
-import { Callout, Chip } from '../components/ui';
+import { Callout, Chip, OwnershipChip } from '../components/ui';
 import {
   buildSectorGroup,
   companyListParams,
@@ -63,12 +63,12 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 
 function subtitle(c: CompanyListItem) {
   const place = c.settlement ? ` · ${c.settlement}` : '';
-  if (c.kind === 'consortium') {
+  if (c.isConsortium) {
     const parsed = parseConsortiumMembers(c.name);
     const members = parsed?.kind === 'list' ? parsed.members.length : null;
     return members ? `${members} участника${place}` : `обединение${place}`;
   }
-  return `${c.eik ? `ЕИК ${c.eik}` : 'непотвърден ЕИК'}${place}`;
+  return `${c.hasEik && c.eik ? `ЕИК ${c.eik}` : 'без ЕИК'}${place}`;
 }
 
 export default function Companies({ loaderData }: Route.ComponentProps) {
@@ -145,7 +145,23 @@ export default function Companies({ loaderData }: Route.ComponentProps) {
       key: 'type',
       header: 'Тип',
       secondary: true,
-      cell: (c) => <Chip>{c.kind === 'consortium' ? 'обединение' : 'дружество'}</Chip>,
+      cell: (c) => (
+        <>
+          <Chip>{c.isConsortium ? 'Обединение (ДЗЗД)' : 'дружество'}</Chip>
+          {!c.isConsortium && !c.hasEik && (
+            <>
+              {' '}
+              <Chip>без ЕИК</Chip>
+            </>
+          )}
+          {c.ownershipKind && (
+            <>
+              {' '}
+              <OwnershipChip kind={c.ownershipKind} />
+            </>
+          )}
+        </>
+      ),
     },
     { key: 'won', header: 'Спечелено', align: 'money', cell: (c) => money(c.wonEur) },
     { key: 'contracts', header: 'Договори', align: 'money', cell: (c) => count(c.contracts) },

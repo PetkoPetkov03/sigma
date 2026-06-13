@@ -7,7 +7,7 @@ import { PageHeader } from '../components/PageHeader';
 import { FactsList } from '../components/FactsList';
 import { StackedBar } from '../components/StackedBar';
 import { ContractMiniTable } from '../components/ContractMiniTable';
-import { ShareBar, Chip, Section, SourceLine } from '../components/ui';
+import { ShareBar, Chip, OwnershipChip, Section, SourceLine } from '../components/ui';
 import { publicCache } from '../lib/cache';
 import { coverageRange, getCoverageMeta } from '../lib/coverage';
 
@@ -58,6 +58,7 @@ export async function loader({ params, context }: Route.LoaderArgs) {
 export default function Company({ loaderData }: Route.ComponentProps) {
   const c = loaderData.company;
   const range = coverageRange(loaderData.coverage.coverageEndYear);
+  const noEikCompany = !c.isConsortium && !c.hasEik;
   return (
     <>
       <Breadcrumbs
@@ -71,18 +72,30 @@ export default function Company({ loaderData }: Route.ComponentProps) {
         <PageHeader
           kicker={
             <>
-              {c.kind === 'consortium' ? 'Обединение' : 'Компания'}
+              {c.isConsortium ? 'Обединение' : 'Компания'}
+              {noEikCompany && (
+                <>
+                  {' '}
+                  · <Chip>без ЕИК</Chip>
+                </>
+              )}
+              {c.ownershipKind && (
+                <>
+                  {' '}
+                  · <OwnershipChip kind={c.ownershipKind} />
+                </>
+              )}
               {c.sector && (
                 <>
                   {' '}
                   · <Chip>{c.sector.short}</Chip>
                 </>
               )}
-              {c.eik ? <> · ЕИК&nbsp;{c.eik}</> : <> · непотвърден ЕИК</>}
+              {c.hasEik && c.eik && <> · ЕИК&nbsp;{c.eik}</>}
             </>
           }
           title={c.displayName}
-          lede={`Профил, обобщаващ публичните средства, спечелени от ${c.kind === 'consortium' ? 'това обединение' : 'тази компания'} през регистъра на обществените поръчки за периода ${range} г.`}
+          lede={`Профил, обобщаващ публичните средства, спечелени от ${c.isConsortium ? 'това обединение' : 'тази компания'} през регистъра на обществените поръчки за периода ${range} г.`}
         />
 
         <FactsList
@@ -104,8 +117,12 @@ export default function Company({ loaderData }: Route.ComponentProps) {
             },
             {
               term: 'Вид субект',
-              value: c.kind === 'consortium' ? 'обединение' : 'дружество',
-              sub: c.kind === 'consortium' ? '(ДЗЗД / консорциум)' : undefined,
+              value: c.isConsortium ? 'обединение' : 'дружество',
+              sub: c.isConsortium
+                ? '(ДЗЗД / консорциум)'
+                : noEikCompany
+                  ? 'без ЕИК в източника'
+                  : undefined,
             },
             c.settlement && { term: 'Седалище', value: c.settlement, sub: c.region ?? undefined },
             c.suspect > 0 && {

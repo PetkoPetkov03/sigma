@@ -1,7 +1,12 @@
 // Rollup row shapes (company_totals / authority_totals) and their mappers to api-contract DTOs.
 // Shared by the home slice and the leaderboard list pages so the mapping lives once.
 
-import type { AuthorityListItem, CompanyListItem, EntityKind } from '@sigma/api-contract';
+import type {
+  AuthorityListItem,
+  CompanyListItem,
+  EntityKind,
+  OwnershipKind,
+} from '@sigma/api-contract';
 import { ENTITY_TYPES } from '@sigma/config';
 import { cleanName, entityName } from '@sigma/shared';
 import { authoritySlug, companySlug } from './identity';
@@ -28,6 +33,7 @@ export interface CompanyTotalsRow {
   bidder_id: string;
   name: string;
   kind: EntityKind;
+  ownership_kind: OwnershipKind | null;
   eik: string | null;
   eik_valid: number;
   settlement: string | null;
@@ -41,13 +47,17 @@ export interface CompanyTotalsRow {
 }
 
 export function toCompanyListItem(r: CompanyTotalsRow): CompanyListItem {
+  const hasEik = r.eik_valid === 1 && Boolean(r.eik);
   return {
     slug: companySlug(r.bidder_id),
     name: cleanName(r.name),
     displayName: entityName(cleanName(r.name), r.kind),
     kind: r.kind,
+    isConsortium: r.kind === 'consortium',
     eik: r.eik,
     eikValid: r.eik_valid === 1,
+    hasEik,
+    ownershipKind: r.ownership_kind,
     settlement: r.settlement,
     sector: sectorRef(r.primary_sector),
     wonEur: r.won_eur,

@@ -14,6 +14,7 @@ import type {
   ContractParty,
   ContractRecord,
   ContractValueTimeline,
+  OwnershipKind,
   ProcedureSlice,
   SectorSpend,
 } from '@sigma/api-contract';
@@ -79,6 +80,7 @@ interface CompanyTotalsFull {
   bidder_id: string;
   name: string;
   kind: 'company' | 'consortium';
+  ownership_kind: OwnershipKind | null;
   eik: string | null;
   eik_valid: number;
   settlement: string | null;
@@ -174,14 +176,18 @@ export async function getCompany(db: D1Database, bidderId: string): Promise<Comp
       ? membership.members.map((name) => ({ name, eik: null, resolvedSlug: null }))
       : [];
   const membershipNote = membership?.kind === 'prose' ? membership.raw : null;
+  const hasEik = row.eik_valid === 1 && Boolean(row.eik);
 
   return {
     slug: companySlug(bidderId),
     name: cleanName(row.name),
     displayName: entityName(cleanName(row.name), row.kind),
     kind: row.kind,
+    isConsortium: row.kind === 'consortium',
     eik: row.eik,
     eikValid: row.eik_valid === 1,
+    hasEik,
+    ownershipKind: row.ownership_kind,
     settlement: row.settlement,
     region: bidderMeta?.region ?? null,
     legalForm: bidderMeta?.legal_form ?? null,
@@ -365,6 +371,9 @@ interface ContractDetailRow {
   eu_programme: string | null;
   duration_days: number | null;
   amount_eur: number | null;
+  signing_value: number | null;
+  current_value: number | null;
+  fx_rate: number | null;
   signing_value_eur: number | null;
   current_value_eur: number | null;
   value_flag: string;
@@ -411,7 +420,8 @@ export async function getContract(
     .prepare(
       `SELECT c.id, c.tender_id, c.contract_subject, c.contract_number, c.document_number, c.lot_id,
               c.signed_at, c.published_at, c.contract_kind, c.eu_funded, c.eu_programme, c.duration_days,
-              c.amount_eur, c.signing_value_eur, c.current_value_eur, c.value_flag, c.date_flag,
+              c.amount_eur, c.signing_value, c.current_value, c.fx_rate,
+              c.signing_value_eur, c.current_value_eur, c.value_flag, c.date_flag,
               c.bids_received, c.bids_rejected, c.bids_sme, c.bids_non_eea,
               c.subcontractor_eik, c.subcontractor_name, c.subcontract_value, c.currency AS contract_currency,
               t.title, t.source_id AS unp, t.procedure_type, t.cpv_code, t.cpv_description, t.num_lots,
@@ -443,9 +453,9 @@ export async function getContract(
       .first<{ won_eur: number; contracts: number; primary_sector: string | null }>(),
     db
       .prepare(
-        `SELECT l.id AS lot_id, l.title, l.estimated_value, l.cpv_code,
+        `SELECT l.id AS lot_id, l.title, l.estimated_value, l.value_currency AS estimated_currency, l.cpv_code,
                 c2.id AS contract_id, c2.signing_value_eur,
-                (SELECT f.eur_per_unit FROM fx_rates f WHERE f.base_currency = ? AND f.rate_date = c2.signed_at) AS estimated_fx_rate,
+                (SELECT f.eur_per_unit FROM fx_rates f WHERE f.base_currency = COALESCE(l.value_currency, ?) AND f.rate_date = c2.signed_at) AS estimated_fx_rate,
                 b2.name AS bidder_name, b2.kind AS bidder_kind, c2.bidder_id
          FROM lots l
          LEFT JOIN contracts c2 ON c2.lot_id = l.id
@@ -457,6 +467,7 @@ export async function getContract(
         lot_id: string;
         title: string;
         estimated_value: number | null;
+        estimated_currency: string | null;
         cpv_code: string | null;
         contract_id: string | null;
         signing_value_eur: number | null;
@@ -467,14 +478,72 @@ export async function getContract(
       }>(),
   ]);
 
-  const suspect = r.value_flag === 'value_suspect' || r.value_flag === 'annex_suspect';
+  const suspect =
+    r.value_flag === 'value_suspect' ||
+    r.value_flag === 'annex_suspect' ||
+    r.value_flag === 'review';
   const dateSuspect = r.date_flag === 'signed_after_publication';
-  const signingEur = r.signing_value_eur;
-  const currentRaw = r.current_value_eur; // post-annex, suppressed for suspect
+  const signingEur =
+    r.signing_value_eur ?? eurFromNative(r.signing_value, r.contract_currency, r.fx_rate);
+  const currentRaw =
+    r.current_value_eur ?? eurFromNative(r.current_value, r.contract_currency, r.fx_rate);
+  const procedureEstimatedEur = eurFromNative(
+    r.estimated_value,
+    r.tender_currency,
+    r.tender_fx_rate,
+  );
+
+  // Lots — only when the prepiska actually has lot rows.
+  let lots = null as ContractDetail['lots'];
+  let currentLotEstimatedEur = null as number | null;
+  if (lotRows.results.length > 0) {
+    const seen = new Set<string>();
+    const rows: ContractLotRow[] = [];
+    let estimatedTotal = 0;
+    let signedTotal = 0;
+    for (const l of lotRows.results) {
+      if (seen.has(l.lot_id)) continue; // a lot may match >1 contract row; keep the first
+      seen.add(l.lot_id);
+      const est = eurFromNative(
+        l.estimated_value,
+        l.estimated_currency ?? r.tender_currency,
+        l.estimated_fx_rate,
+      );
+      if (l.lot_id === r.lot_id) currentLotEstimatedEur = est;
+      if (est != null) estimatedTotal += est;
+      if (l.signing_value_eur != null) signedTotal += l.signing_value_eur;
+      rows.push({
+        lotLabel: l.lot_id.split(':').pop() ?? l.lot_id,
+        subject: l.title,
+        contractId: l.contract_id ? contractSlug(l.contract_id) : null,
+        contractorSlug: l.bidder_id ? companySlug(l.bidder_id) : null,
+        contractorName: l.bidder_name
+          ? entityName(cleanName(l.bidder_name), l.bidder_kind ?? 'company')
+          : null,
+        estimatedEur: est,
+        signingEur: l.signing_value_eur,
+        isCurrent: l.lot_id === r.lot_id,
+      });
+    }
+    // Lot labels are numeric strings ("1".."103"). The SQL `ORDER BY l.id` collates the full lot id
+    // as text, so they come back lexically (1, 10, 100, 2…). Re-sort the assembled rows with a
+    // numeric-aware comparator so the table reads 1, 2, 3 … 10 … 100 (falls back to lexical for any
+    // non-numeric label).
+    rows.sort((a, b) => a.lotLabel.localeCompare(b.lotLabel, 'bg', { numeric: true }));
+    lots = {
+      unp: r.unp,
+      numLots: r.num_lots,
+      rows,
+      estimatedTotalEur: estimatedTotal || null,
+      signedTotalEur: signedTotal || null,
+    };
+  }
+
   const value: ContractValueTimeline = {
-    estimatedEur: eurFromNative(r.estimated_value, r.tender_currency, r.tender_fx_rate),
+    estimatedEur: currentLotEstimatedEur ?? procedureEstimatedEur,
+    procedureEstimatedEur,
     signingEur,
-    currentEur: suspect ? null : (currentRaw ?? signingEur),
+    currentEur: currentRaw ?? signingEur,
     deltaPct:
       !suspect && currentRaw != null && signingEur != null && signingEur !== 0
         ? (currentRaw - signingEur) / signingEur
@@ -505,46 +574,6 @@ export async function getContract(
     totalContracts: compTotals?.contracts ?? 0,
     totalEur: compTotals?.won_eur ?? 0,
   };
-
-  // Lots — only when the prepiska actually has lot rows.
-  let lots = null as ContractDetail['lots'];
-  if (lotRows.results.length > 0) {
-    const seen = new Set<string>();
-    const rows: ContractLotRow[] = [];
-    let estimatedTotal = 0;
-    let signedTotal = 0;
-    for (const l of lotRows.results) {
-      if (seen.has(l.lot_id)) continue; // a lot may match >1 contract row; keep the first
-      seen.add(l.lot_id);
-      const est = eurFromNative(l.estimated_value, r.tender_currency, l.estimated_fx_rate);
-      if (est) estimatedTotal += est;
-      if (l.signing_value_eur) signedTotal += l.signing_value_eur;
-      rows.push({
-        lotLabel: l.lot_id.split(':').pop() ?? l.lot_id,
-        subject: l.title,
-        contractId: l.contract_id ? contractSlug(l.contract_id) : null,
-        contractorSlug: l.bidder_id ? companySlug(l.bidder_id) : null,
-        contractorName: l.bidder_name
-          ? entityName(cleanName(l.bidder_name), l.bidder_kind ?? 'company')
-          : null,
-        estimatedEur: est,
-        signingEur: l.signing_value_eur,
-        isCurrent: l.lot_id === r.lot_id,
-      });
-    }
-    // Lot labels are numeric strings ("1".."103"). The SQL `ORDER BY l.id` collates the full lot id
-    // as text, so they come back lexically (1, 10, 100, 2…). Re-sort the assembled rows with a
-    // numeric-aware comparator so the table reads 1, 2, 3 … 10 … 100 (falls back to lexical for any
-    // non-numeric label).
-    rows.sort((a, b) => a.lotLabel.localeCompare(b.lotLabel, 'bg', { numeric: true }));
-    lots = {
-      unp: r.unp,
-      numLots: r.num_lots,
-      rows,
-      estimatedTotalEur: estimatedTotal || null,
-      signedTotalEur: signedTotal || null,
-    };
-  }
 
   // Declared subcontractor ("Подизпълнител" in the АОП feed) — sparse (~0.8% of contracts). Value is
   // in the contract's native currency; normalise to EUR (fixed BGN peg) to match the rest of the UI.

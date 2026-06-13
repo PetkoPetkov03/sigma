@@ -50,13 +50,13 @@ DELETE FROM home_totals;
 -- ── 2) company_totals (per bidder; clean rows only so won_eur pairs with contracts) ───────────────
 CREATE TABLE IF NOT EXISTS company_totals (
   bidder_id TEXT PRIMARY KEY REFERENCES bidders(id), name TEXT NOT NULL, kind TEXT NOT NULL,
-  eik TEXT, eik_valid INTEGER NOT NULL DEFAULT 0, settlement TEXT, won_eur REAL NOT NULL,
+  ownership_kind TEXT, eik TEXT, eik_valid INTEGER NOT NULL DEFAULT 0, settlement TEXT, won_eur REAL NOT NULL,
   contracts INTEGER NOT NULL, authorities INTEGER NOT NULL, primary_sector TEXT,
   eu_eur REAL NOT NULL DEFAULT 0, first_date TEXT, last_date TEXT
 );
 DELETE FROM company_totals;
-INSERT INTO company_totals (bidder_id, name, kind, eik, eik_valid, settlement, won_eur, contracts, authorities, eu_eur, first_date, last_date)
-SELECT b.id, b.name, b.kind, b.eik_normalized, b.eik_valid, b.settlement,
+INSERT INTO company_totals (bidder_id, name, kind, ownership_kind, eik, eik_valid, settlement, won_eur, contracts, authorities, eu_eur, first_date, last_date)
+SELECT b.id, b.name, b.kind, b.ownership_kind, b.eik_normalized, b.eik_valid, b.settlement,
   SUM(c.amount_eur), COUNT(*), COUNT(DISTINCT t.authority_id),
   SUM(CASE WHEN c.eu_funded = 1 THEN c.amount_eur ELSE 0 END),
   MIN(c.signed_at), MAX(c.signed_at)

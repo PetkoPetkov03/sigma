@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { count, money, plural } from '@sigma/shared';
-import { distinctSearchTitleParts, MAX_QUERY_CHARS, MAX_QUERY_TOKENS, search } from '@sigma/db';
+import { MAX_QUERY_CHARS, MAX_QUERY_TOKENS, search } from '@sigma/db';
+import type { SearchHit } from '@sigma/api-contract';
 import type { Route } from './+types/search';
 import { Breadcrumbs } from '../components/Breadcrumbs';
 import { PageHeader } from '../components/PageHeader';
-import { Callout } from '../components/ui';
+import { Callout, Chip, OwnershipChip } from '../components/ui';
 import { publicCache } from '../lib/cache';
 
 export function meta({ data }: Route.MetaArgs) {
@@ -85,25 +86,60 @@ function highlight(text: string | null, re: RegExp | null): ReactNode {
   return text.split(re).map((part, i) => (i % 2 === 1 ? <mark key={i}>{part}</mark> : part));
 }
 
-function titleParts(hit: { kind: string; ident: string | null; title: string }): string[] {
-  if (hit.kind !== 'company' || hit.ident) return [hit.title];
-  const parts = distinctSearchTitleParts(hit.title);
-  return parts.length ? parts : [hit.title];
+function renderTitle(hit: SearchHit, re: RegExp | null) {
+  return highlight(hit.title, re);
 }
 
-function renderTitle(
-  hit: { kind: string; ident: string | null; title: string },
-  re: RegExp | null,
-) {
-  const parts = titleParts(hit);
-  if (parts.length === 1) return highlight(parts[0]!, re);
+function exceptionBadge(hit: SearchHit): ReactNode {
+  if (hit.kind !== 'company') return null;
+  if (hit.isConsortium) return <Chip>Обединение (ДЗЗД)</Chip>;
+  if (hit.hasEik === false) return <Chip>без ЕИК</Chip>;
+  return null;
+}
+
+function renderName(hit: SearchHit, re: RegExp | null): ReactNode {
+  const badge = exceptionBadge(hit);
+  const ownershipBadge =
+    hit.kind === 'company' && hit.ownershipKind ? <OwnershipChip kind={hit.ownershipKind} /> : null;
   return (
-    <span className="name-parts">
-      {parts.map((part) => (
-        <span key={part}>{highlight(part, re)}</span>
-      ))}
-    </span>
+    <>
+      {badge}
+      {badge && ' '}
+      {ownershipBadge}
+      {ownershipBadge && ' '}
+      {renderTitle(hit, re)}
+    </>
   );
+}
+
+function joinMeta(parts: ReactNode[]): ReactNode {
+  if (parts.length === 0) return null;
+  return (
+    <>
+      {parts.map((part, i) => (
+        <span key={i}>
+          {i > 0 && ' · '}
+          {part}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function companyMeta(hit: SearchHit, re: RegExp | null): ReactNode {
+  const parts: ReactNode[] = [];
+  if (hit.ident) {
+    parts.push(
+      <>
+        ЕИК <span className="mono">{hit.ident}</span>
+      </>,
+    );
+  }
+  if (hit.isConsortium && hit.memberCount != null) {
+    parts.push(`${count(hit.memberCount)} ${plural(hit.memberCount, 'участник', 'участника')}`);
+  }
+  if (hit.subtitle) parts.push(highlight(hit.subtitle, re));
+  return joinMeta(parts);
 }
 
 export default function Search({ loaderData }: Route.ComponentProps) {
@@ -168,7 +204,7 @@ export default function Search({ loaderData }: Route.ComponentProps) {
                 <Link to={h.href} className="result" key={h.slug + h.title}>
                   <span className="kind">{KIND_LABEL[h.kind]}</span>
                   <span>
-                    <p className="name">{renderTitle(h, highlightRe)}</p>
+                    <p className="name">{renderName(h, highlightRe)}</p>
                     <p className="meta">
                       {h.kind === 'contract' ? (
                         <>
@@ -181,15 +217,7 @@ export default function Search({ loaderData }: Route.ComponentProps) {
                           {highlight(h.subtitle, highlightRe)}
                         </>
                       ) : (
-                        <>
-                          {h.ident && (
-                            <>
-                              ЕИК <span className="mono">{h.ident}</span>
-                            </>
-                          )}
-                          {h.ident && h.subtitle && ' · '}
-                          {h.subtitle && highlight(h.subtitle, highlightRe)}
-                        </>
+                        companyMeta(h, highlightRe)
                       )}
                     </p>
                   </span>

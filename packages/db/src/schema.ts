@@ -66,6 +66,7 @@ export interface BidderRow {
   eik_valid: number; // 1 if eik_normalized is a valid 9/13-digit ЕИК
   is_consortium: number; // 1 if a joint venture (multi-ЕИК field or ДЗЗД/ОБЕДИНЕНИЕ/КОНСОРЦИУМ name)
   kind: 'company' | 'consortium';
+  ownership_kind: 'state' | 'municipal' | 'mixed' | null;
   // company master data — filled from OCDS parties
   legal_form: string | null;
   nuts: string | null;

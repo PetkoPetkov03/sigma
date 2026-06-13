@@ -90,6 +90,35 @@ ON CONFLICT(id) DO UPDATE SET
   is_consortium = max(bidders.is_consortium, excluded.is_consortium),
   kind = CASE WHEN max(bidders.is_consortium, excluded.is_consortium) = 1 THEN 'consortium' ELSE bidders.kind END;
 
+-- Curated public-owned winner classification. Exact EIK matches cover the allowlist; a small branch
+-- list handles valid 13-digit branch EIKs used by AПИ/ОПУ, ЕСО/МЕР, БНР and Информационно обслужване.
+CREATE TABLE IF NOT EXISTS state_owned_eik (
+  eik TEXT PRIMARY KEY,
+  ownership_kind TEXT NOT NULL CHECK (ownership_kind IN ('state', 'municipal', 'mixed')),
+  canonical_name TEXT NOT NULL
+);
+
+UPDATE bidders
+SET ownership_kind = (
+  SELECT s.ownership_kind
+  FROM state_owned_eik s
+  WHERE bidders.eik_valid = 1
+    AND (
+      bidders.eik_normalized = s.eik
+      OR (s.eik = '000695089' AND bidders.eik_normalized GLOB '0006950890*')
+      OR (s.eik = '175201304' AND bidders.eik_normalized GLOB '1752013040*')
+      OR (s.eik = '000672343' AND bidders.eik_normalized GLOB '0006723430*')
+      OR (s.eik = '831641791' AND bidders.eik_normalized GLOB '8316417910124*')
+    )
+  LIMIT 1
+);
+
+INSERT OR IGNORE INTO refresh_touched_bidders (bidder_id)
+SELECT b.id
+FROM bidders b
+JOIN company_totals ct ON ct.bidder_id = b.id
+WHERE ct.ownership_kind IS NOT b.ownership_kind;
+
 -- @refresh-batch touch-tenders
 INSERT OR IGNORE INTO refresh_touched_contracts (id)
 SELECT c.id
@@ -589,6 +618,36 @@ FROM (
           CASE
             WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
             WHEN (c.estimated_value IS NULL OR c.estimated_value = 0) AND COALESCE(c.current_value, c.signing_value) >= 10000000000 THEN 'value_suspect'
+            WHEN COALESCE(c.current_value, c.signing_value) <= 0 THEN 'value_suspect'
+            WHEN c.estimated_value > 0 AND c.signing_value IS NOT NULL AND (
+              CASE
+                WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+                WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+                ELSE c.signing_value * (
+                  SELECT f.eur_per_unit
+                  FROM fx_rates f
+                  WHERE f.base_currency = c.currency
+                    AND f.rate_date <= c.contract_date
+                    AND f.rate_date >= date(c.contract_date, '-10 days')
+                  ORDER BY f.rate_date DESC
+                  LIMIT 1
+                )
+              END
+            ) / NULLIF((
+              CASE
+                WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.estimated_value
+                WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.estimated_value / 1.95583
+                ELSE c.estimated_value * (
+                  SELECT f.eur_per_unit
+                  FROM fx_rates f
+                  WHERE f.base_currency = COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''))
+                    AND f.rate_date <= c.contract_date
+                    AND f.rate_date >= date(c.contract_date, '-10 days')
+                  ORDER BY f.rate_date DESC
+                  LIMIT 1
+                )
+              END
+            ), 0) < 0.05 THEN 'value_suspect'
             WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
             WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
             ELSE 'ok'
@@ -754,6 +813,36 @@ FROM (
           CASE
             WHEN c.estimated_value > 0 AND c.signing_value / c.estimated_value >= 100 THEN 'value_suspect'
             WHEN (c.estimated_value IS NULL OR c.estimated_value = 0) AND COALESCE(c.current_value, c.signing_value) >= 10000000000 THEN 'value_suspect'
+            WHEN COALESCE(c.current_value, c.signing_value) <= 0 THEN 'value_suspect'
+            WHEN c.estimated_value > 0 AND c.signing_value IS NOT NULL AND (
+              CASE
+                WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.signing_value
+                WHEN COALESCE(NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.signing_value / 1.95583
+                ELSE c.signing_value * (
+                  SELECT f.eur_per_unit
+                  FROM fx_rates f
+                  WHERE f.base_currency = c.currency
+                    AND f.rate_date <= c.contract_date
+                    AND f.rate_date >= date(c.contract_date, '-10 days')
+                  ORDER BY f.rate_date DESC
+                  LIMIT 1
+                )
+              END
+            ) / NULLIF((
+              CASE
+                WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'EUR' THEN c.estimated_value
+                WHEN COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''), 'BGN') = 'BGN' THEN c.estimated_value / 1.95583
+                ELSE c.estimated_value * (
+                  SELECT f.eur_per_unit
+                  FROM fx_rates f
+                  WHERE f.base_currency = COALESCE(NULLIF(c.procurement_currency, ''), NULLIF(c.currency, ''))
+                    AND f.rate_date <= c.contract_date
+                    AND f.rate_date >= date(c.contract_date, '-10 days')
+                  ORDER BY f.rate_date DESC
+                  LIMIT 1
+                )
+              END
+            ), 0) < 0.05 THEN 'value_suspect'
             WHEN c.current_value IS NOT NULL AND (c.current_value < 0 OR (c.signing_value > 0 AND c.current_value / c.signing_value >= 100)) THEN 'annex_suspect'
             WHEN c.estimated_value > 0 AND COALESCE(c.current_value, c.signing_value) / c.estimated_value >= 10 THEN 'review'
             ELSE 'ok'
@@ -1045,8 +1134,8 @@ WHERE b.eik_normalized IN (SELECT eik FROM raw_ocds_parties WHERE eik IS NOT NUL
 -- full-recomputed in isolated batches so convergence stays simple.
 -- @refresh-batch company-totals
 DELETE FROM company_totals WHERE bidder_id IN (SELECT bidder_id FROM refresh_touched_bidders);
-INSERT INTO company_totals (bidder_id, name, kind, eik, eik_valid, settlement, won_eur, contracts, authorities, eu_eur, first_date, last_date)
-SELECT b.id, b.name, b.kind, b.eik_normalized, b.eik_valid, b.settlement,
+INSERT INTO company_totals (bidder_id, name, kind, ownership_kind, eik, eik_valid, settlement, won_eur, contracts, authorities, eu_eur, first_date, last_date)
+SELECT b.id, b.name, b.kind, b.ownership_kind, b.eik_normalized, b.eik_valid, b.settlement,
   SUM(c.amount_eur), COUNT(*), COUNT(DISTINCT t.authority_id),
   SUM(CASE WHEN c.eu_funded = 1 THEN c.amount_eur ELSE 0 END), MIN(c.signed_at), MAX(c.signed_at)
 FROM contracts c JOIN bidders b ON b.id = c.bidder_id JOIN tenders t ON t.id = c.tender_id
