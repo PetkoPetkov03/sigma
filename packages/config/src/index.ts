@@ -123,14 +123,6 @@ export const CPV_SECTORS: readonly CpvSector[] = [
   { code: '98', label: 'Други обществени, социални и персонални услуги' },
 ];
 
-const CPV_SECTOR_BY_CODE = new Map<string, CpvSector>(CPV_SECTORS.map((s) => [s.code, s]));
-
-/** Map an 8-digit CPV code to its sector (CPV division), or null if missing/unknown. Deterministic. */
-export function sectorForCpv(cpvCode: string | null | undefined): CpvSector | null {
-  if (!cpvCode) return null;
-  return CPV_SECTOR_BY_CODE.get(cpvCode.replace(/\D/g, '').slice(0, 2)) ?? null;
-}
-
 // ── CPV category groups (curated partition over CPV divisions) ─────────────────────────────────
 //
 // CPV has no official level above the 2-digit division, so these top-level categories are a
@@ -358,28 +350,3 @@ export const ENTITY_TYPES: Record<EntityType, string> = {
   company: 'Дружество',
   consortium: 'Обединение',
 };
-
-export interface RiskWeights {
-  spec: number;
-  price: number;
-  competition: number;
-  cartel: number;
-  process: number;
-}
-
-// Weights sum to 1.0 so a fully-saturated tender scores exactly 100.
-export const DEFAULT_RISK_WEIGHTS: RiskWeights = {
-  spec: 0.25,
-  price: 0.25,
-  competition: 0.2,
-  cartel: 0.2,
-  process: 1 - (0.25 + 0.25 + 0.2 + 0.2),
-};
-
-export function requireEnv(env: Record<string, unknown>, key: string): string {
-  const value = env[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-  return value;
-}

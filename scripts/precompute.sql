@@ -19,7 +19,7 @@
 -- CORPUS counts use COUNT(*) (a record count, not the count behind a sum) and pair that tally alongside.
 
 -- ── 0) Per-contract EUR value timeline ────────────────────────────────────────────────────────
--- signing/current in EUR for the contract page's estimated→signing→current strip and contractValue().
+-- signing/current in EUR for the contract page's estimated→signing→current strip.
 -- BGN at the fixed peg (÷1.95583), EUR as-is, foreign at the row's stored fx_rate (eur_per_unit).
 -- Display rule: NULL where the figure is suspect, so the caller renders „данните се преглеждат",
 -- never a fabricated number. signing suppressed for value_suspect; current suppressed for value_ or

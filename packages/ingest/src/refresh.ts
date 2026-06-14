@@ -136,14 +136,3 @@ export async function refreshDerivedContractCount(db: D1Database): Promise<numbe
     .first<{ n: number }>();
   return row?.n ?? 0;
 }
-
-/**
- * Execute refresh-slice.sql as ordered D1 batches, then return the number of refresh-derived
- * ('c:o:%') contracts now in the domain.
- */
-export async function runRefreshSlice(db: D1Database, refreshSliceSql: string): Promise<number> {
-  for (const group of refreshSliceStatementGroups(refreshSliceSql)) {
-    await runRefreshSliceStatementGroup(db, group);
-  }
-  return refreshDerivedContractCount(db);
-}

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  distinctSearchTitleParts,
   MAX_QUERY_CHARS,
   MAX_QUERY_TOKENS,
   search,
@@ -78,14 +77,6 @@ function searchDb(): D1Database {
 }
 
 describe('search helpers', () => {
-  it('splits and de-duplicates semicolon-joined title blobs', () => {
-    expect(distinctSearchTitleParts('Алфа ООД; Бета АД; алфа оод ; ; Бета АД; Гама ЕООД')).toEqual([
-      'Алфа ООД',
-      'Бета АД',
-      'Гама ЕООД',
-    ]);
-  });
-
   it('builds list hrefs with an encoded q filter', () => {
     const href = searchMoreHref('company', 'строителство София');
     const url = new URL(`https://sigma.test${href}`);

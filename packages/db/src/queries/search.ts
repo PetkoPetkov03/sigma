@@ -92,25 +92,6 @@ export function searchMoreHref(kind: SearchKind, query: string): string {
   const params = new URLSearchParams({ q: query });
   return `${group?.path ?? '/search'}?${params.toString()}`;
 }
-
-export function distinctSearchTitleParts(title: string): string[] {
-  const parts = title
-    .split(';')
-    .map((part) => part.replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
-  const seen = new Set<string>();
-  const distinct: string[] = [];
-
-  for (const part of parts) {
-    const key = part.toLocaleLowerCase('bg');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    distinct.push(part);
-  }
-
-  return distinct.length ? distinct : [];
-}
-
 interface HitRow {
   ref: string;
   title: string;

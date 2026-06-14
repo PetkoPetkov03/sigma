@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   cleanName,
-  contractValue,
   count,
   date,
   entityName,
@@ -82,7 +81,7 @@ describe('dates', () => {
   });
 });
 
-describe('entityName / contractValue', () => {
+describe('entityName', () => {
   it('collapses a consortium member list to first + „и др."', () => {
     expect(entityName('МЕДЕКС ООД; АЛТА ФАРМАСЮТИКЪЛС ООД; ЕКОФАРМ ЕООД', 'consortium')).toBe(
       'МЕДЕКС ООД и др.',
@@ -90,10 +89,6 @@ describe('entityName / contractValue', () => {
   });
   it('passes company names through as source truth', () => {
     expect(entityName('"СОФАРМА ТРЕЙДИНГ "АД', 'company')).toBe('"СОФАРМА ТРЕЙДИНГ "АД');
-  });
-  it('returns amount_eur, or null for a suspect/unconvertible row', () => {
-    expect(contractValue({ amount_eur: 98_700_000 })).toBe(98_700_000);
-    expect(contractValue({ amount_eur: null })).toBeNull();
   });
 });
 
