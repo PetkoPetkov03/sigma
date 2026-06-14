@@ -44,6 +44,23 @@ moves on a swap; worker/ETL/workflow names never change.
 > **Current state (2026-06-13):** staging live = `sigma-stage-next` (`f4e0880c…`); prod = `sigma`
 > (`2c60b1de…`) — single DBs, not yet on the slot pair above.
 
+### Adopting the slots & retiring old DBs
+
+- **Create the slots lazily, on each environment's _next_ deploy.** If an env's two slots don't exist
+  yet, the next deploy that touches that env creates them first (procedure step 1), then ships + flips —
+  there is no separate migration pass.
+- **Per environment, independently.** Staging and production adopt slots on **their own** next deploy. A
+  staging-only deploy creates/uses **only** the `sigma-stage-*` slots and must **not** create or touch the
+  production `sigma-*` slots (and vice versa). Adopt both only when you are deliberately deploying both.
+- **Retire the old DB only after a confirmed, healthy deploy — and only with explicit user confirmation.**
+  Once the new slot is live and verified, the superseded **legacy / pre-slot** DB (e.g. `sigma-stage-next`,
+  or production's original `sigma`) is deleted to avoid clutter and cost — but **never automatically**.
+  Always ask the user to confirm before `wrangler d1 delete`, and re-check that the name resolves to the
+  *legacy* id (not a live slot, and not the other environment's DB) before deleting.
+- **Steady state keeps both slots.** After adoption the two slots are permanent: the idle one is the
+  one-reseed-deep rollback and is *overwritten* (wiped + reshipped) on the next reseed, **not** deleted.
+  So "delete the old DB" is the one-time legacy retirement above — rolling reseeds delete nothing.
+
 ## Why not `import.mjs --remote`
 
 `node scripts/import.mjs --remote` runs the in-place `runFullDerive` against the remote D1, which
@@ -67,8 +84,10 @@ it run `precompute.sql` on the target.
 
 Ship into the **idle** slot while the live slot keeps serving — no empty window, nothing bad gets cached.
 
-1. **First adoption only:** `wrangler d1 create <env>-blue` and `<env>-green`, and add both as permanent
-   `d1_databases` entries in the migrate config. Thereafter skip this step.
+1. **Create slots if absent (first adoption of THIS env only).** If `<env>-blue`/`<env>-green` don't yet
+   exist, `wrangler d1 create` both and add them as permanent `d1_databases` entries in the migrate config
+   — for **this environment only** (a staging-only deploy never creates the prod slots). See
+   [Adopting the slots & retiring old DBs](#adopting-the-slots--retiring-old-dbs). Thereafter skip this step.
 2. **Identify the idle slot.** `SIGMA_D1_ID` (the env secret) names the live slot; the other is idle.
    `wrangler d1 list` for ids.
 3. **Empty the idle slot** (children-first, FKs deferred) — safe, nothing points at it, zero live impact.
@@ -90,6 +109,10 @@ Ship into the **idle** slot while the live slot keeps serving — no empty windo
 8. **Rollback window.** The previous slot stays intact as instant rollback — flip `SIGMA_D1_ID` back and
    redeploy. It is **overwritten by the next reseed**, so the rollback is one-reseed deep. Never delete a
    slot on the hot path.
+9. **Retire the legacy DB (adoption only).** After the new deploy is confirmed healthy, delete the
+   superseded pre-slot DB (e.g. `sigma-stage-next`) to avoid clutter/cost — **only with explicit user
+   confirmation**, and only after verifying the name resolves to that legacy id (never a live slot, never
+   the other environment). Steady-state reseeds delete nothing — the previous slot is the rollback.
 
 ### wipe.sql (empty a slot, children-first)
 
